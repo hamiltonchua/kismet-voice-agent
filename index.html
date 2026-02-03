@@ -41,6 +41,7 @@
     transition: color 0.2s;
   }
   #status.active { color: var(--green); }
+  #status.listening { color: var(--accent); }
 
   #chat {
     flex: 1;
@@ -124,10 +125,22 @@
     animation: pulse 1.5s infinite;
     background: #ff2244;
   }
+  #micBtn.vad-active {
+    background: var(--green);
+  }
+  #micBtn.vad-active.recording {
+    animation: pulse-green 1.5s infinite;
+    background: #00ff99;
+  }
   @keyframes pulse {
     0% { box-shadow: 0 0 0 0 rgba(233,69,96,0.6); }
     70% { box-shadow: 0 0 0 20px rgba(233,69,96,0); }
     100% { box-shadow: 0 0 0 0 rgba(233,69,96,0); }
+  }
+  @keyframes pulse-green {
+    0% { box-shadow: 0 0 0 0 rgba(0,217,126,0.6); }
+    70% { box-shadow: 0 0 0 20px rgba(0,217,126,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,217,126,0); }
   }
 
   #clearBtn {
@@ -137,17 +150,15 @@
     font-size: 16px;
   }
 
-  .visualizer {
-    display: flex;
-    align-items: center;
-    gap: 3px;
-    height: 40px;
+  #vadToggle {
+    width: 48px; height: 48px;
+    background: var(--surface2);
+    color: var(--text2);
+    font-size: 14px;
   }
-  .visualizer .bar {
-    width: 4px;
-    background: var(--accent);
-    border-radius: 2px;
-    transition: height 0.05s;
+  #vadToggle.active {
+    background: var(--green);
+    color: var(--bg);
   }
 
   @media (max-width: 480px) {
@@ -165,21 +176,38 @@
 <div id="chat"></div>
 
 <div id="controls">
-  <button class="btn" id="clearBtn" title="Clear conversation"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
-  <button class="btn" id="micBtn" title="Hold to talk"><svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+  <button class="btn" id="clearBtn" title="Clear conversation">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+  </button>
+  <button class="btn" id="micBtn" title="Hold to talk (or enable auto-listen)">
+    <svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+  </button>
+  <button class="btn" id="vadToggle" title="Toggle auto-listen (VAD)">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+  </button>
 </div>
+
+<!-- VAD library -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
 
 <script>
 const SAMPLE_RATE = 16000;
-let ws, mediaStream, audioCtx, recorder, isRecording = false;
+let ws;
 const chatEl = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const micBtn = document.getElementById('micBtn');
 const clearBtn = document.getElementById('clearBtn');
+const vadToggle = document.getElementById('vadToggle');
+
+// ---- State ----
+let vadEnabled = false;
+let vadInstance = null;
+let isProcessing = false;  // Are we waiting for a response?
 
 // ---- Streaming state ----
-let streamingMsgEl = null;  // The element showing streaming text
-let streamingText = '';     // Accumulated streamed text
+let streamingMsgEl = null;
+let streamingText = '';
 
 // ---- Audio queue for sequential playback ----
 const audioQueue = [];
@@ -229,36 +257,30 @@ function connect() {
     const msg = JSON.parse(e.data);
 
     if (msg.type === 'ready') {
-      setStatus('Ready — hold the mic button to talk', true);
+      updateStatusForMode();
     } else if (msg.type === 'status') {
-      setStatus(msg.text, true);
+      setStatus(msg.text, 'active');
     } else if (msg.type === 'transcript') {
-      // User transcript (non-streaming)
       addMessage(msg.role, msg.text, msg.time ? `${msg.time}s` : null);
     } else if (msg.type === 'stream_start') {
-      // Start streaming assistant response
       streamingText = '';
       streamingMsgEl = document.createElement('div');
       streamingMsgEl.className = 'msg assistant streaming';
       chatEl.appendChild(streamingMsgEl);
       chatEl.scrollTop = chatEl.scrollHeight;
     } else if (msg.type === 'token') {
-      // Append token to streaming message
       streamingText += msg.text;
       if (streamingMsgEl) {
         streamingMsgEl.textContent = streamingText;
         chatEl.scrollTop = chatEl.scrollHeight;
       }
     } else if (msg.type === 'audio_chunk') {
-      // Queue audio chunk for playback
       enqueueAudio(msg.data);
     } else if (msg.type === 'stream_end') {
-      // Finalize streaming message
       if (streamingMsgEl) {
         streamingMsgEl.classList.remove('streaming');
         streamingMsgEl.textContent = msg.text;
 
-        // Add timing meta
         const t = msg.times;
         const meta = document.createElement('div');
         meta.className = 'meta';
@@ -268,17 +290,17 @@ function connect() {
         }
         meta.textContent = parts.join(' · ');
         streamingMsgEl.appendChild(meta);
-
         chatEl.scrollTop = chatEl.scrollHeight;
       }
       streamingMsgEl = null;
       streamingText = '';
-      setStatus(`${msg.sentences} sentences streamed`, true);
+      isProcessing = false;
+      updateStatusForMode();
     } else if (msg.type === 'audio') {
-      // Legacy: full audio (fallback, shouldn't happen in v0.2)
       playAudio(msg.data);
       const t = msg.times;
-      setStatus(`STT ${t.stt}s · LLM ${t.llm}s · TTS ${t.tts}s`, true);
+      setStatus(`STT ${t.stt}s · LLM ${t.llm}s · TTS ${t.tts}s`, 'active');
+      isProcessing = false;
     }
   };
 
@@ -288,73 +310,152 @@ function connect() {
   };
 }
 
-// ---- Audio Recording ----
-async function startRecording() {
-  if (!mediaStream) {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
+// ---- VAD (Voice Activity Detection) ----
+async function initVAD() {
+  if (vadInstance) return;
+
+  setStatus('Initializing voice detection...', 'active');
+
+  try {
+    vadInstance = await vad.MicVAD.new({
+      positiveSpeechThreshold: 0.8,
+      negativeSpeechThreshold: 0.3,
+      minSpeechFrames: 5,
+      preSpeechPadFrames: 10,
+      redemptionFrames: 15,
+      onSpeechStart: () => {
+        if (!isProcessing) {
+          micBtn.classList.add('recording');
+          setStatus('Listening...', 'listening');
+        }
+      },
+      onSpeechEnd: (audio) => {
+        micBtn.classList.remove('recording');
+        if (!isProcessing && audio.length > SAMPLE_RATE * 0.3) {
+          sendAudio(audio);
+        } else if (!isProcessing) {
+          updateStatusForMode();
+        }
+      },
+    });
+    console.log('[VAD] Initialized');
+  } catch (err) {
+    console.error('[VAD] Init failed:', err);
+    setStatus('VAD init failed: ' + err.message, '');
+    vadEnabled = false;
+    vadToggle.classList.remove('active');
+  }
+}
+
+async function startVAD() {
+  if (!vadInstance) await initVAD();
+  if (vadInstance) {
+    vadInstance.start();
+    vadEnabled = true;
+    vadToggle.classList.add('active');
+    micBtn.classList.add('vad-active');
+    updateStatusForMode();
+    console.log('[VAD] Started');
+  }
+}
+
+function stopVAD() {
+  if (vadInstance) {
+    vadInstance.pause();
+  }
+  vadEnabled = false;
+  vadToggle.classList.remove('active');
+  micBtn.classList.remove('vad-active');
+  micBtn.classList.remove('recording');
+  updateStatusForMode();
+  console.log('[VAD] Stopped');
+}
+
+function toggleVAD() {
+  if (vadEnabled) {
+    stopVAD();
+  } else {
+    startVAD();
+  }
+}
+
+// ---- Send audio to server ----
+function sendAudio(float32Audio) {
+  // Convert float32 to int16
+  const int16 = new Int16Array(float32Audio.length);
+  for (let i = 0; i < float32Audio.length; i++) {
+    int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32Audio[i] * 32767)));
+  }
+
+  const b64 = arrayBufferToBase64(int16.buffer);
+  ws.send(JSON.stringify({ type: 'audio', data: b64 }));
+  isProcessing = true;
+  setStatus('Processing...', 'active');
+}
+
+// ---- Manual recording (fallback) ----
+let manualChunks = [];
+let manualRecorder = null;
+let manualStream = null;
+let manualCtx = null;
+
+async function startManualRecording() {
+  if (vadEnabled) return; // VAD handles it
+
+  if (!manualStream) {
+    manualStream = await navigator.mediaDevices.getUserMedia({
       audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
     });
   }
 
-  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  const source = audioCtx.createMediaStreamSource(mediaStream);
-  const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+  manualCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  const source = manualCtx.createMediaStreamSource(manualStream);
+  const proc = manualCtx.createScriptProcessor(4096, 1, 1);
 
-  const chunks = [];
+  manualChunks = [];
   proc.onaudioprocess = (e) => {
-    if (isRecording) {
-      const float32 = e.inputBuffer.getChannelData(0);
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
-      }
-      chunks.push(int16);
-    }
+    const float32 = e.inputBuffer.getChannelData(0);
+    manualChunks.push(new Float32Array(float32));
   };
 
   source.connect(proc);
-  proc.connect(audioCtx.destination);
+  proc.connect(manualCtx.destination);
+  manualRecorder = { proc, source };
 
-  isRecording = true;
-  recorder = { proc, source, chunks, audioCtx };
   micBtn.classList.add('recording');
-  setStatus('Listening...', true);
+  setStatus('Listening...', 'listening');
 }
 
-function stopRecording() {
-  if (!recorder) return;
-  isRecording = false;
+function stopManualRecording() {
+  if (vadEnabled || !manualRecorder) return;
+
   micBtn.classList.remove('recording');
 
-  const { proc, source, chunks, audioCtx: ctx } = recorder;
+  const { proc, source } = manualRecorder;
   proc.disconnect();
   source.disconnect();
-  ctx.close();
+  manualCtx.close();
+  manualRecorder = null;
 
   // Merge chunks
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const merged = new Int16Array(total);
+  const total = manualChunks.reduce((n, c) => n + c.length, 0);
+  const merged = new Float32Array(total);
   let offset = 0;
-  for (const chunk of chunks) {
+  for (const chunk of manualChunks) {
     merged.set(chunk, offset);
     offset += chunk.length;
   }
+  manualChunks = [];
 
-  recorder = null;
-
-  // Skip if too short (< 0.3s)
   if (merged.length < SAMPLE_RATE * 0.3) {
-    setStatus('Too short — hold longer', true);
+    setStatus('Too short — hold longer', 'active');
     return;
   }
 
-  // Send as base64
-  const b64 = arrayBufferToBase64(merged.buffer);
-  ws.send(JSON.stringify({ type: 'audio', data: b64 }));
-  setStatus('Processing...', true);
+  sendAudio(merged);
 }
 
-// ---- Audio Playback (legacy, for backwards compat) ----
+// ---- Audio Playback ----
 function playAudio(b64) {
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   const blob = new Blob([bytes], { type: 'audio/wav' });
@@ -365,9 +466,17 @@ function playAudio(b64) {
 }
 
 // ---- UI helpers ----
-function setStatus(text, active = false) {
+function setStatus(text, className = '') {
   statusEl.textContent = text;
-  statusEl.className = active ? 'active' : '';
+  statusEl.className = className;
+}
+
+function updateStatusForMode() {
+  if (vadEnabled) {
+    setStatus('Auto-listen ON — just start talking', 'active');
+  } else {
+    setStatus('Ready — hold mic or enable auto-listen', 'active');
+  }
 }
 
 function addMessage(role, text, meta) {
@@ -392,55 +501,48 @@ function arrayBufferToBase64(buffer) {
 }
 
 // ---- Event handlers ----
-// Support both click-toggle and hold-to-talk
-let holdTimer = null;
-let isHold = false;
-
 micBtn.addEventListener('mousedown', (e) => {
   e.preventDefault();
-  isHold = false;
-  holdTimer = setTimeout(() => { isHold = true; }, 200);
-  startRecording();
+  startManualRecording();
 });
-
 micBtn.addEventListener('mouseup', (e) => {
   e.preventDefault();
-  clearTimeout(holdTimer);
-  stopRecording();
+  stopManualRecording();
 });
-
 micBtn.addEventListener('mouseleave', () => {
-  if (isRecording) stopRecording();
-  clearTimeout(holdTimer);
+  if (manualRecorder) stopManualRecording();
 });
 
 // Touch support
 micBtn.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  startRecording();
+  startManualRecording();
 });
 micBtn.addEventListener('touchend', (e) => {
   e.preventDefault();
-  stopRecording();
+  stopManualRecording();
 });
 
-// Spacebar hold-to-talk
+// Spacebar hold-to-talk (only when VAD is off)
 document.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && !e.repeat && !isRecording) {
+  if (e.code === 'Space' && !e.repeat && !vadEnabled && !manualRecorder) {
     e.preventDefault();
-    startRecording();
+    startManualRecording();
   }
 });
 document.addEventListener('keyup', (e) => {
-  if (e.code === 'Space' && isRecording) {
+  if (e.code === 'Space' && manualRecorder) {
     e.preventDefault();
-    stopRecording();
+    stopManualRecording();
   }
 });
 
+// VAD toggle
+vadToggle.addEventListener('click', toggleVAD);
+
+// Clear
 clearBtn.addEventListener('click', () => {
   chatEl.innerHTML = '';
-  // Clear audio queue
   audioQueue.length = 0;
   ws.send(JSON.stringify({ type: 'clear' }));
 });
