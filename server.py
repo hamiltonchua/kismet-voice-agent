@@ -39,7 +39,7 @@ OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "92c0ca8eeb7054cd6587b7368e83f25673
 OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
-    "You are Friday, responding via voice chat. Your response will be spoken aloud via TTS. "
+    "You are Kismet, a voice assistant. Your response will be spoken aloud via TTS. "
     "STRICT RULES: No emoji. No emoticons. No markdown. No bullet lists. No code blocks. No asterisks. No special characters. "
     "Keep responses concise and conversational. Just plain spoken English, like you're talking to someone. "
     "Be natural, warm, and to the point."
@@ -220,7 +220,7 @@ def synthesize(text: str) -> bytes:
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Friday Voice Chat")
+app = FastAPI(title="Kismet Voice Agent")
 
 @app.get("/")
 async def index():

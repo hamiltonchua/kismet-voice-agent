@@ -6,7 +6,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 - [x] Push-to-talk via mic button or spacebar
 - [x] faster-whisper large-v3 STT on GPU
 - [x] Kokoro ONNX TTS (local)
-- [x] Routes through OpenClaw (Friday)
+- [x] Routes through OpenClaw
 - [x] Web UI with HTTPS
 - [x] Git repo initialized
 
@@ -41,7 +41,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 ---
 
 ## Phase 3: Interruption Support (v0.4) ✅
-*If you talk while Friday is speaking, she stops and listens.*
+*If you talk while Kismet is speaking, it stops and listens.*
 
 - [x] Track playback state on the client (playing / idle)
 - [x] Keep VAD active during TTS playback
@@ -58,7 +58,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 ---
 
 ## Phase 4: Wake Word (v0.5)
-*Only activate after hearing "Friday." Low power idle state.*
+*Only activate after hearing "Hey Kismet." Low power idle state.*
 
 - [ ] Evaluate and pick a wake word engine:
   - **OpenWakeWord** (Python, CPU, custom words) — top choice
@@ -109,7 +109,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
   └─── WebSocket ───→ [Server on discovery:8765]
                          │
                          ├─ faster-whisper (GPU) — STT
-                         ├─ OpenClaw API — LLM (Friday)
+                         ├─ OpenClaw API — LLM
                          └─ Kokoro ONNX — TTS (sentence-level streaming)
 ```
 

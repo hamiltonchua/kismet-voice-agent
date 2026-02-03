@@ -1,6 +1,8 @@
-# Friday Voice Agent
+# Kismet Voice Agent
 
 Real-time voice interface for [OpenClaw](https://github.com/openclaw/openclaw) agents. Talk to your agent using your voice — speech-to-text and text-to-speech run locally on your GPU, while the conversation routes through OpenClaw.
+
+Built by [Kismet Labs](https://kismetlabs.com), an AI consulting firm in the Philippines.
 
 ## How It Works
 
@@ -13,6 +15,13 @@ Browser (mic) → WebSocket → Server
 ```
 
 Everything except the LLM runs locally on your machine. No cloud STT/TTS APIs, no extra costs.
+
+## Features
+
+- **Streaming TTS** — responses spoken sentence-by-sentence as they arrive
+- **Voice Activity Detection (VAD)** — hands-free, no button required
+- **Interruption support** — talk over Kismet and it stops to listen
+- **Local processing** — STT and TTS run on your GPU, private by default
 
 ## Requirements
 
@@ -84,7 +93,13 @@ If accessing from `localhost` only, this isn't needed — browsers allow mic acc
 python3 server.py
 ```
 
-Open `https://<your-host>:8765` in your browser. Accept the self-signed cert warning, then hold the mic button or press **spacebar** to talk.
+Open `https://<your-host>:8765` in your browser. Accept the self-signed cert warning.
+
+**Controls:**
+- **Eye button** — toggle VAD (auto-listen mode)
+- **Mic button** — hold to talk (manual mode)
+- **Spacebar** — hold to talk (when VAD is off)
+- **Talk while Kismet speaks** — interrupts and listens to you
 
 ### Configuration
 
@@ -120,11 +135,11 @@ Fits comfortably on a 4GB+ GPU. Use `WHISPER_MODEL=medium` (~1.5GB) or `small` (
 
 See [ROADMAP.md](ROADMAP.md) for the development plan:
 
-1. **Streaming TTS** — sentence-level audio streaming for lower perceived latency
-2. **VAD** — voice activity detection, no more push-to-talk button
-3. **Interruption** — talk over the agent and it stops speaking
-4. **Wake word** — "Hey Friday" activation
-5. **Polish** — reconnection, settings, mobile support
+- [x] **Streaming TTS** — sentence-level audio streaming
+- [x] **VAD** — voice activity detection, hands-free
+- [x] **Interruption** — talk over Kismet to interrupt
+- [ ] **Wake word** — "Hey Kismet" activation
+- [ ] **Polish** — reconnection, settings, mobile support
 
 ## License
 
