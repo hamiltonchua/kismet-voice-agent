@@ -3,7 +3,7 @@
 Kismet Voice Agent - Real-time voice chat with streaming TTS and interruption support.
 STT: faster-whisper (GPU)  |  LLM: OpenClaw  |  TTS: Chatterbox Turbo (GPU)
 
-v0.4: Chatterbox TTS integration
+v0.5: Wake word detection (OpenWakeWord)
 """
 
 import asyncio
@@ -35,6 +35,12 @@ KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_heart")
 CHATTERBOX_REF = os.getenv("CHATTERBOX_REF", None)  # Optional reference audio for voice cloning
 STT_SAMPLE_RATE = 16000
 
+# Wake word config
+WAKE_WORD_MODEL = os.getenv("WAKE_WORD_MODEL", "hey_jarvis")  # hey_jarvis, alexa, hey_mycroft, etc.
+WAKE_WORD_THRESHOLD = float(os.getenv("WAKE_WORD_THRESHOLD", "0.5"))
+WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "true").lower() == "true"
+IDLE_TIMEOUT_SEC = float(os.getenv("IDLE_TIMEOUT_SEC", "30"))  # Return to sleep after this many seconds of silence
+
 # OpenClaw gateway
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://127.0.0.1:18789/v1/chat/completions")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "92c0ca8eeb7054cd6587b7368e83f25673e41c7b0cf9985b")
@@ -53,7 +59,9 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
 whisper_model = None
 tts_model = None
 tts_sample_rate = None
+wake_word_model = None
 conversation_history = []
+
 
 def get_whisper():
     global whisper_model
@@ -63,6 +71,7 @@ def get_whisper():
         whisper_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
         print("[STT] Ready.")
     return whisper_model
+
 
 def get_tts():
     global tts_model, tts_sample_rate
@@ -82,6 +91,17 @@ def get_tts():
             tts_sample_rate = 22050  # Kokoro sample rate
             print(f"[TTS] Kokoro ready. Voice: {KOKORO_VOICE}")
     return tts_model, tts_sample_rate
+
+
+def get_wake_word():
+    global wake_word_model
+    if wake_word_model is None and WAKE_WORD_ENABLED:
+        from openwakeword.model import Model
+        print(f"[WakeWord] Loading model: {WAKE_WORD_MODEL}...")
+        wake_word_model = Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework='tflite')
+        print(f"[WakeWord] Ready. Threshold: {WAKE_WORD_THRESHOLD}")
+    return wake_word_model
+
 
 # ---------------------------------------------------------------------------
 # Pipeline functions
@@ -105,6 +125,30 @@ def transcribe(audio_bytes: bytes) -> str:
         return text
     finally:
         os.unlink(tmp_path)
+
+
+def detect_wake_word(audio_chunk: np.ndarray) -> tuple[bool, float]:
+    """
+    Run wake word detection on an audio chunk.
+    Returns (detected, confidence).
+    Audio should be int16 @ 16kHz.
+    """
+    model = get_wake_word()
+    if model is None:
+        return False, 0.0
+    
+    # OpenWakeWord expects chunks of 1280 samples (80ms at 16kHz)
+    # Feed whatever we have
+    prediction = model.predict(audio_chunk)
+    score = prediction.get(WAKE_WORD_MODEL, 0.0)
+    
+    detected = score >= WAKE_WORD_THRESHOLD
+    if detected:
+        print(f"[WakeWord] Detected! Score: {score:.3f}")
+        # Reset the model state after detection to avoid repeated triggers
+        model.reset()
+    
+    return detected, score
 
 
 # Sentence boundary pattern: ends with .!? followed by space or end
@@ -251,10 +295,12 @@ def synthesize(text: str) -> tuple[bytes, int]:
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Kismet Voice Agent")
 
+
 @app.get("/")
 async def index():
     html_path = Path(__file__).parent / "index.html"
     return HTMLResponse(html_path.read_text())
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
@@ -262,17 +308,49 @@ async def websocket_endpoint(ws: WebSocket):
     print("[WS] Client connected")
 
     loop = asyncio.get_event_loop()
+    
+    # Load models
     await loop.run_in_executor(None, get_whisper)
     await loop.run_in_executor(None, get_tts)
-    await ws.send_json({"type": "ready"})
+    if WAKE_WORD_ENABLED:
+        await loop.run_in_executor(None, get_wake_word)
+    
+    # Send ready with wake word config
+    await ws.send_json({
+        "type": "ready",
+        "wake_word_enabled": WAKE_WORD_ENABLED,
+        "wake_word": WAKE_WORD_MODEL if WAKE_WORD_ENABLED else None,
+        "idle_timeout": IDLE_TIMEOUT_SEC,
+    })
 
+    # Client state: sleeping (wake word mode) or awake (VAD mode)
+    client_state = "sleeping" if WAKE_WORD_ENABLED else "awake"
+    last_activity = time.time()
+    
     # Cancellation event for current processing
     cancel_event = asyncio.Event()
     processing_task = None
+    idle_check_task = None
+    
+    async def check_idle():
+        """Background task to check for idle timeout and return to sleep."""
+        nonlocal client_state, last_activity
+        while True:
+            await asyncio.sleep(5)  # Check every 5 seconds
+            if client_state == "awake" and not processing_task:
+                elapsed = time.time() - last_activity
+                if elapsed > IDLE_TIMEOUT_SEC:
+                    client_state = "sleeping"
+                    print(f"[State] Idle timeout ({IDLE_TIMEOUT_SEC}s), going to sleep")
+                    try:
+                        await ws.send_json({"type": "sleep"})
+                    except:
+                        break
 
     async def process_audio(audio_bytes: bytes):
-        nonlocal cancel_event
+        nonlocal cancel_event, last_activity
         cancel_event.clear()
+        last_activity = time.time()
 
         # 1. STT
         await ws.send_json({"type": "status", "text": "Transcribing..."})
@@ -343,6 +421,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif event_type == "done":
                 llm_time = time.time() - llm_start
+                last_activity = time.time()
                 await ws.send_json({
                     "type": "stream_end",
                     "text": data,
@@ -355,11 +434,16 @@ async def websocket_endpoint(ws: WebSocket):
                     "sentences": sentence_count,
                 })
 
+    # Start idle check task if wake word is enabled
+    if WAKE_WORD_ENABLED:
+        idle_check_task = asyncio.create_task(check_idle())
+
     try:
         while True:
             msg = await ws.receive_json()
 
             if msg["type"] == "audio":
+                # Full audio utterance (from VAD or manual recording)
                 # Cancel any existing processing
                 if processing_task and not processing_task.done():
                     cancel_event.set()
@@ -371,6 +455,24 @@ async def websocket_endpoint(ws: WebSocket):
                 audio_bytes = base64.b64decode(msg["data"])
                 processing_task = asyncio.create_task(process_audio(audio_bytes))
 
+            elif msg["type"] == "audio_stream":
+                # Streaming audio chunk for wake word detection
+                if client_state != "sleeping":
+                    continue  # Ignore if not in sleep mode
+                
+                audio_b64 = msg["data"]
+                audio_bytes = base64.b64decode(audio_b64)
+                audio_chunk = np.frombuffer(audio_bytes, dtype=np.int16)
+                
+                # Run wake word detection (on CPU, fast)
+                detected, score = await loop.run_in_executor(None, detect_wake_word, audio_chunk)
+                
+                if detected:
+                    client_state = "awake"
+                    last_activity = time.time()
+                    print(f"[State] Wake word detected, now awake")
+                    await ws.send_json({"type": "wake", "score": round(score, 3)})
+
             elif msg["type"] == "cancel":
                 print("[WS] Cancel requested")
                 cancel_event.set()
@@ -381,9 +483,20 @@ async def websocket_endpoint(ws: WebSocket):
                 conversation_history.clear()
                 await ws.send_json({"type": "status", "text": "Conversation cleared."})
 
+            elif msg["type"] == "set_state":
+                # Client can request state change (for manual wake/sleep toggle)
+                new_state = msg.get("state")
+                if new_state in ("sleeping", "awake"):
+                    client_state = new_state
+                    last_activity = time.time()
+                    print(f"[State] Client requested: {new_state}")
+
     except WebSocketDisconnect:
         cancel_event.set()
+        if idle_check_task:
+            idle_check_task.cancel()
         print("[WS] Client disconnected")
+
 
 # ---------------------------------------------------------------------------
 # Main
@@ -402,4 +515,6 @@ if __name__ == "__main__":
 
     print(f"[LLM] OpenClaw endpoint: {OPENCLAW_URL}")
     print(f"[TTS] Engine: {TTS_ENGINE}")
+    if WAKE_WORD_ENABLED:
+        print(f"[WakeWord] Model: {WAKE_WORD_MODEL}, Threshold: {WAKE_WORD_THRESHOLD}")
     uvicorn.run(app, host="0.0.0.0", port=8765, **kwargs)
