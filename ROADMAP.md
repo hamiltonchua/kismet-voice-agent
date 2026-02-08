@@ -57,29 +57,23 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 
 ---
 
-## Phase 4: Wake Word (v0.5)
+## Phase 4: Wake Word (v0.5) ✅
 *Only activate after hearing "Hey Kismet." Low power idle state.*
 
-- [ ] Evaluate and pick a wake word engine:
-  - **OpenWakeWord** (Python, CPU, custom words) — top choice
-  - Porcupine (commercial)
-  - Simple whisper-tiny on short chunks (wasteful but no extra deps)
-- [ ] Decide where wake word runs:
-  - **Option A: Server-side** — client streams low-quality audio continuously, server runs wake word detection on CPU. More control, slightly more bandwidth.
-  - **Option B: Client-side** — run wake word in browser via WASM/JS. Zero bandwidth when idle. Harder to set up.
-- [ ] Implement chosen approach
-- [ ] State machine: `sleeping → wake_word_detected → listening → processing → speaking → sleeping`
-- [ ] Visual UI states (pulsing dot when sleeping, active indicator when awake)
-- [ ] Configurable timeout: return to sleep after N seconds of no interaction
-- [ ] Custom wake word training (if using OpenWakeWord)
+- [x] OpenWakeWord engine (Python, CPU, TFLite)
+- [x] Server-side detection — client streams audio chunks, server runs wake word on CPU
+- [x] State machine: `sleeping → wake_word_detected → listening → processing → speaking → sleeping`
+- [x] Visual UI states (sleeping indicator, active when awake)
+- [x] Configurable timeout: return to sleep after N seconds of no interaction
+- [x] Model: `hey_jarvis`, threshold: 0.5
 
-**Estimated effort:** 1-2 days
+**Completed:** 2026-02-08
 **Branch:** `feat/wake-word`
 **Depends on:** Phase 3 (interruption)
 
 ---
 
-## Phase 5: Speaker Verification (v0.6) 🔧 In Progress
+## Phase 5: Speaker Verification (v0.6) ✅
 *Only respond to recognized voices. Reject strangers.*
 
 - [x] SpeechBrain ECAPA-TDNN speaker verification module (`speaker_verify.py`)
@@ -94,12 +88,13 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 - [x] Configurable threshold via `SPEAKER_VERIFY_THRESHOLD` env var (default 0.65)
 - [x] `SPEAKER_VERIFY` env var: "auto" (verify if enrolled), "true", "false"
 
+**Completed:** 2026-02-08
 **Branch:** `feat/speaker-verification`
 **Depends on:** Phase 3 (interruption)
 
 ---
 
-## Phase 6: Wake Word + Speaker Verification Combined (v0.7)
+## Phase 6: Wake Word + Speaker Verification Combined (v0.7) ✅
 *Wake word triggers listening, speaker verification gates processing.*
 
 - [x] Integrate wake word (Phase 4) with speaker verification (Phase 5)
@@ -116,9 +111,9 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 ## Phase 7: Polish & Hardening (v1.0)
 *Production-quality touches.*
 
-- [ ] Reconnection handling (WebSocket drops, server restarts)
-- [ ] Graceful error messages in the UI
-- [ ] Audio level visualizer (show mic input levels)
+- [x] Reconnection handling (exponential backoff, state restoration)
+- [x] Graceful error messages (toast notifications for all pipeline failures)
+- [x] Audio level visualizer (green glow ring on mic button)
 - [ ] Settings panel (voice selection, wake word toggle, VAD sensitivity)
 - [ ] Mobile-friendly layout
 - [ ] Conversation export (save transcript)
@@ -149,6 +144,20 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
                          ├─ OpenClaw API — LLM
                          └─ Chatterbox Turbo (GPU) — TTS
 ```
+
+## Phase 8: Meeting Companion
+*Passive transcription with diarization. Only responds to Ham's voice on command.*
+
+- [ ] Passive transcription mode (always listening, transcribing in background)
+- [ ] Speaker diarization with pyannote (who said what)
+- [ ] Command-on-demand: only responds when Ham speaks a command
+- [ ] Meeting notes / transcript export
+- [ ] Multi-speaker labeling
+
+**Estimated effort:** 2-3 days
+**Depends on:** Phase 5 (speaker verification)
+
+---
 
 ## Notes
 - Each phase is a separate git branch, merged to main when stable
