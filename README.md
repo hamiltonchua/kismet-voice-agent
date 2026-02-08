@@ -1,6 +1,6 @@
 # Kismet Voice Agent
 
-Real-time voice interface for [OpenClaw](https://github.com/openclaw/openclaw) agents. Talk to your agent using your voice — speech-to-text and text-to-speech run locally on your GPU, while the conversation routes through OpenClaw.
+Real-time voice interface for [OpenClaw](https://github.com/openclaw/openclaw) agents. Talk to your agent using your voice — speech-to-text, text-to-speech, wake word detection, and speaker verification all run locally.
 
 Built by [Kismet Labs](https://kismetlabs.com), an AI consulting firm in the Philippines.
 
@@ -8,9 +8,11 @@ Built by [Kismet Labs](https://kismetlabs.com), an AI consulting firm in the Phi
 
 ```
 Browser (mic) → WebSocket → Server
-                              ├─ STT: faster-whisper (GPU)
+                              ├─ Wake Word: OpenWakeWord (CPU)
+                              ├─ Speaker Verification: SpeechBrain ECAPA-TDNN (CPU)
+                              ├─ STT: faster-whisper large-v3 (GPU)
                               ├─ LLM: OpenClaw /v1/chat/completions → your agent
-                              └─ TTS: Kokoro ONNX (local)
+                              └─ TTS: Chatterbox Turbo (GPU)
                             ← audio response
 ```
 
@@ -18,34 +20,47 @@ Everything except the LLM runs locally on your machine. No cloud STT/TTS APIs, n
 
 ## Features
 
+- **Wake Word** — say "Hey Jarvis" to activate (OpenWakeWord, runs on CPU)
+- **Speaker Verification** — only responds to enrolled voices (SpeechBrain ECAPA-TDNN)
 - **Streaming TTS** — responses spoken sentence-by-sentence as they arrive
 - **Voice Activity Detection (VAD)** — hands-free, no button required
 - **Interruption support** — talk over Kismet and it stops to listen
-- **Local processing** — STT and TTS run on your GPU, private by default
+- **Voice Cloning** — Chatterbox TTS supports cloning from a reference audio file
+- **Auto-Reconnection** — WebSocket reconnects with exponential backoff
+- **Audio Level Visualizer** — mic input levels shown on the mic button
+- **Local processing** — STT, TTS, wake word, and speaker verify all run locally
 
 ## Requirements
 
-- **GPU:** NVIDIA with 4GB+ VRAM (tested on RTX 3060 12GB)
-- **Python 3.10+**
+- **GPU:** NVIDIA with 6GB+ VRAM (tested on RTX 3060 12GB)
+- **Python 3.11** (required for Chatterbox TTS)
 - **OpenClaw** with chat completions endpoint enabled
 - **CUDA** toolkit installed
+- **conda** (recommended for environment management)
 
 ### Python Dependencies
 
 ```bash
-pip install faster-whisper fastapi uvicorn kokoro-onnx numpy httpx
+pip install -r requirements.txt
 ```
 
-### Model Files
-
-Download Kokoro TTS models into the project directory:
+Or manually:
 
 ```bash
+pip install faster-whisper fastapi uvicorn numpy httpx chatterbox-tts speechbrain openwakeword
+```
+
+### Optional: Kokoro TTS (lighter alternative)
+
+If you prefer Kokoro over Chatterbox (less VRAM, no voice cloning):
+
+```bash
+pip install kokoro-onnx
 curl -L -o kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
 curl -L -o voices-v1.0.bin https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
 ```
 
-The faster-whisper model (`large-v3`, ~3GB) downloads automatically on first run.
+Set `TTS_ENGINE=kokoro` when running.
 
 ## OpenClaw Setup
 
@@ -63,12 +78,6 @@ Enable the chat completions endpoint in your OpenClaw config:
 }
 ```
 
-Or via the gateway tool:
-
-```
-openclaw gateway config.patch '{"gateway":{"http":{"endpoints":{"chatCompletions":{"enabled":true}}}}}'
-```
-
 ## SSL Certificate
 
 Browsers require HTTPS to access the microphone over a network. Generate a self-signed cert:
@@ -77,69 +86,81 @@ Browsers require HTTPS to access the microphone over a network. Generate a self-
 openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
 ```
 
-If accessing from `localhost` only, this isn't needed — browsers allow mic access on localhost over HTTP.
-
 ## Usage
 
-### Quick Start
+### Quick Start (with Chatterbox TTS)
+
+```bash
+./start-chatterbox.sh
+```
+
+### Quick Start (with Kokoro TTS)
 
 ```bash
 ./start.sh
 ```
 
-### Manual Start
-
-```bash
-python3 server.py
-```
-
 Open `https://<your-host>:8765` in your browser. Accept the self-signed cert warning.
 
 **Controls:**
+- **Wake word** — say "Hey Jarvis" to activate (when wake word mode is on)
 - **Eye button** — toggle VAD (auto-listen mode)
-- **Mic button** — hold to talk (manual mode)
+- **Mic button** — hold to talk (manual mode), glows green to show audio levels
 - **Spacebar** — hold to talk (when VAD is off)
 - **Talk while Kismet speaks** — interrupts and listens to you
+- **Enroll Voice** — register your voice for speaker verification
+
+### Speaker Enrollment
+
+1. Click "Enroll Voice" in the header
+2. Record 3 guided sentences (hold to record each one)
+3. Your voice embedding is saved to `~/.kismet/voices/`
+4. Kismet will now only respond to your voice
 
 ### Configuration
 
-Set environment variables to customize:
-
 | Variable | Default | Description |
 |---|---|---|
-| `WHISPER_MODEL` | `large-v3` | Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`) |
+| `TTS_ENGINE` | `chatterbox` | TTS engine (`chatterbox` or `kokoro`) |
+| `CHATTERBOX_REF` | — | Reference audio for voice cloning |
+| `WHISPER_MODEL` | `large-v3` | Whisper model size |
 | `WHISPER_DEVICE` | `cuda` | Device for STT (`cuda`, `cpu`) |
-| `KOKORO_VOICE` | `af_heart` | Kokoro voice ID |
+| `KOKORO_VOICE` | `af_heart` | Kokoro voice ID (when using Kokoro) |
+| `WAKE_WORD_ENABLED` | `true` | Enable wake word detection |
+| `WAKE_WORD_MODEL` | `hey_jarvis` | Wake word model name |
+| `WAKE_WORD_THRESHOLD` | `0.5` | Wake word detection threshold |
+| `SPEAKER_VERIFY` | `auto` | Speaker verification (`auto`, `true`, `false`) |
+| `SPEAKER_VERIFY_THRESHOLD` | `0.65` | Cosine similarity threshold |
+| `IDLE_TIMEOUT_SEC` | `30` | Seconds before returning to sleep |
 | `OPENCLAW_URL` | `http://127.0.0.1:18789/v1/chat/completions` | OpenClaw endpoint |
 | `OPENCLAW_TOKEN` | — | Gateway auth token |
 | `OPENCLAW_AGENT` | `main` | Agent ID to route to |
 | `SYSTEM_PROMPT` | *(built-in)* | System prompt for voice responses |
-
-Example with a different voice and smaller model:
-
-```bash
-WHISPER_MODEL=medium KOKORO_VOICE=bf_emma python3 server.py
-```
 
 ## VRAM Usage
 
 | Component | VRAM |
 |---|---|
 | faster-whisper large-v3 | ~3 GB |
-| Kokoro ONNX | ~300 MB |
-| **Total** | **~3.3 GB** |
+| Chatterbox Turbo | ~2 GB |
+| **Total** | **~5 GB** |
 
-Fits comfortably on a 4GB+ GPU. Use `WHISPER_MODEL=medium` (~1.5GB) or `small` (~500MB) to reduce usage.
+Wake word (OpenWakeWord) and speaker verification (SpeechBrain) run on CPU.
+
+Use `TTS_ENGINE=kokoro` (~300MB) or `WHISPER_MODEL=medium` (~1.5GB) to reduce VRAM.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the development plan:
+See [ROADMAP.md](ROADMAP.md) for the full development plan:
 
-- [x] **Streaming TTS** — sentence-level audio streaming
-- [x] **VAD** — voice activity detection, hands-free
-- [x] **Interruption** — talk over Kismet to interrupt
-- [ ] **Wake word** — "Hey Kismet" activation
-- [ ] **Polish** — reconnection, settings, mobile support
+- [x] **Phase 1:** Streaming TTS
+- [x] **Phase 2:** Voice Activity Detection (VAD)
+- [x] **Phase 3:** Interruption support
+- [x] **Phase 4:** Wake word ("Hey Jarvis")
+- [x] **Phase 5:** Speaker verification
+- [x] **Phase 6:** Wake word + speaker verification combined
+- [ ] **Phase 7:** Polish & hardening (in progress)
+- [ ] **Phase 8:** Meeting companion (diarization)
 
 ## License
 
