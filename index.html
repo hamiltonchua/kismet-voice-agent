@@ -124,10 +124,62 @@
   .btn:hover { transform: scale(1.05); }
   .btn:active { transform: scale(0.95); }
 
+  /* Audio level visualizer ring around mic button */
   #micBtn {
     background: var(--accent);
     box-shadow: 0 0 0 0 rgba(233,69,96,0.4);
+    position: relative;
   }
+  #audioLevel {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    pointer-events: none;
+    transition: border-color 0.05s, box-shadow 0.05s;
+  }
+  #audioLevel.active {
+    border-color: rgba(0,217,126,0.6);
+  }
+
+  /* Error toast */
+  .error-toast {
+    position: fixed;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(233,69,96,0.15);
+    border: 1px solid rgba(233,69,96,0.3);
+    color: var(--accent);
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    max-width: 90%;
+    text-align: center;
+  }
+  .error-toast.show { opacity: 1; }
+
+  /* Reconnect banner */
+  #reconnectBanner {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: rgba(233,69,96,0.9);
+    color: white;
+    text-align: center;
+    padding: 8px;
+    font-size: 0.85rem;
+    z-index: 300;
+    cursor: pointer;
+  }
+  #reconnectBanner.show { display: block; }
+
   #micBtn.recording {
     animation: pulse 1.5s infinite;
     background: #ff2244;
@@ -303,6 +355,12 @@
   </div>
 </div>
 
+<!-- Reconnect banner -->
+<div id="reconnectBanner">Connection lost. Click to retry.</div>
+
+<!-- Error toast -->
+<div class="error-toast" id="errorToast"></div>
+
 <div id="status">Connecting...</div>
 <div id="chat"></div>
 
@@ -311,6 +369,7 @@
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
   </button>
   <button class="btn" id="micBtn" title="Hold to talk, or say the wake word">
+    <div id="audioLevel"></div>
     <svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
   </button>
   <button class="btn" id="wakeToggle" title="Toggle wake word mode">
@@ -333,6 +392,9 @@ const statusEl = document.getElementById('status');
 const micBtn = document.getElementById('micBtn');
 const clearBtn = document.getElementById('clearBtn');
 const wakeToggle = document.getElementById('wakeToggle');
+const audioLevelEl = document.getElementById('audioLevel');
+const errorToastEl = document.getElementById('errorToast');
+const reconnectBanner = document.getElementById('reconnectBanner');
 
 // ---- State ----
 let wakeWordEnabled = false;  // Server has wake word enabled
@@ -350,9 +412,41 @@ let streamingWorklet = null;
 let streamingSource = null;
 let streamingStream = null;
 
+// ---- Reconnection state ----
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_MS = 1000;
+let reconnectTimer = null;
+let wasConnected = false;       // Track if we had a successful connection before
+let savedWakeWordActive = false; // Restore wake word state on reconnect
+
 // ---- Streaming state ----
 let streamingMsgEl = null;
 let streamingText = '';
+
+// ---- Error toast ----
+let errorToastTimer = null;
+function showError(text, durationMs = 4000) {
+  errorToastEl.textContent = text;
+  errorToastEl.classList.add('show');
+  clearTimeout(errorToastTimer);
+  errorToastTimer = setTimeout(() => errorToastEl.classList.remove('show'), durationMs);
+}
+
+// ---- Audio level visualizer ----
+let audioLevelRAF = null;
+function updateAudioLevel(rms) {
+  // rms is 0..1, map to visual intensity
+  if (rms > 0.01) {
+    audioLevelEl.classList.add('active');
+    const spread = Math.min(rms * 40, 12); // max 12px glow
+    const alpha = Math.min(rms * 3, 0.8);
+    audioLevelEl.style.boxShadow = `0 0 ${spread}px rgba(0,217,126,${alpha})`;
+  } else {
+    audioLevelEl.classList.remove('active');
+    audioLevelEl.style.boxShadow = 'none';
+  }
+}
 
 // ---- Audio queue for sequential playback ----
 const audioQueue = [];
@@ -430,10 +524,22 @@ function interrupt() {
 
 // ---- WebSocket ----
 function connect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
 
-  ws.onopen = () => setStatus('Loading models... (first time may take a moment)');
+  ws.onopen = () => {
+    console.log('[WS] Connected');
+    reconnectAttempts = 0;
+    reconnectBanner.classList.remove('show');
+    if (wasConnected) {
+      setStatus('Reconnected! Loading models...', 'active');
+    } else {
+      setStatus('Loading models... (first time may take a moment)');
+    }
+    wasConnected = true;
+  };
 
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -445,13 +551,25 @@ function connect() {
       
       if (wakeWordEnabled) {
         console.log(`[WakeWord] Available: "${wakeWordName}", idle timeout: ${idleTimeout}s`);
-        // Auto-enable wake word mode
-        enableWakeWordMode();
+        // Restore wake word state on reconnect, or auto-enable on first connect
+        if (savedWakeWordActive || !wasConnected || wakeWordActive) {
+          enableWakeWordMode();
+        } else {
+          updateStatusForMode();
+        }
       } else {
         updateStatusForMode();
       }
       // Check speaker enrollment
       ws.send(JSON.stringify({ type: 'check_enrollment' }));
+
+    } else if (msg.type === 'error') {
+      // Graceful error display from server
+      console.warn('[Server Error]', msg.text);
+      showError(msg.text);
+      isProcessing = false;
+      updateStatusForMode();
+
     } else if (msg.type === 'wake') {
       // Wake word detected!
       console.log(`[WakeWord] Detected! Score: ${msg.score}`);
@@ -562,9 +680,28 @@ function connect() {
   };
 
   ws.onclose = () => {
-    setStatus('Disconnected. Reconnecting...');
+    console.log('[WS] Disconnected');
     stopWakeWordStreaming();
-    setTimeout(connect, 2000);
+    stopPlayback();
+
+    // Save state for restore on reconnect
+    savedWakeWordActive = wakeWordActive;
+
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(BASE_RECONNECT_MS * Math.pow(2, reconnectAttempts), 30000);
+      reconnectAttempts++;
+      setStatus(`Disconnected... Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, '');
+      console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+      reconnectTimer = setTimeout(connect, delay);
+    } else {
+      // Max retries reached — show clickable banner
+      setStatus('Connection lost', '');
+      reconnectBanner.classList.add('show');
+    }
+  };
+
+  ws.onerror = (err) => {
+    console.error('[WS] Error:', err);
   };
 }
 
@@ -668,9 +805,15 @@ async function startWakeWordStreaming() {
     const processor = streamingAudioContext.createScriptProcessor(WAKE_CHUNK_SIZE, 1, 1);
     
     processor.onaudioprocess = (e) => {
+      const float32 = e.inputBuffer.getChannelData(0);
+
+      // Audio level visualization (always, regardless of state)
+      let sum = 0;
+      for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+      updateAudioLevel(Math.sqrt(sum / float32.length));
+
       if (clientState !== 'sleeping' || !ws || ws.readyState !== WebSocket.OPEN) return;
       
-      const float32 = e.inputBuffer.getChannelData(0);
       const int16 = new Int16Array(float32.length);
       for (let i = 0; i < float32.length; i++) {
         int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
@@ -687,10 +830,14 @@ async function startWakeWordStreaming() {
     console.log('[WakeWord] Audio streaming started');
   } catch (err) {
     console.error('[WakeWord] Failed to start streaming:', err);
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      showError('Mic access denied — enable microphone in browser settings', 6000);
+    }
   }
 }
 
 function stopWakeWordStreaming() {
+  updateAudioLevel(0);
   if (streamingWorklet) {
     streamingWorklet.disconnect();
     streamingWorklet = null;
@@ -723,6 +870,10 @@ async function initVAD() {
       minSpeechFrames: 5,
       preSpeechPadFrames: 10,
       redemptionFrames: 15,
+      onFrameProcessed: (probs) => {
+        // Use VAD speech probability as audio level proxy
+        updateAudioLevel(probs.isSpeech * 0.5);
+      },
       onSpeechStart: () => {
         if (isSpeaking || isProcessing) {
           interrupt();
@@ -796,9 +947,18 @@ async function startManualRecording() {
   }
 
   if (!manualStream) {
-    manualStream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
-    });
+    try {
+      manualStream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      });
+    } catch (err) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        showError('Mic access denied — enable microphone in browser settings', 6000);
+      } else {
+        showError('Could not access microphone: ' + err.message);
+      }
+      return;
+    }
   }
 
   manualCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -809,6 +969,10 @@ async function startManualRecording() {
   proc.onaudioprocess = (e) => {
     const float32 = e.inputBuffer.getChannelData(0);
     manualChunks.push(new Float32Array(float32));
+    // Audio level visualization during manual recording
+    let sum = 0;
+    for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+    updateAudioLevel(Math.sqrt(sum / float32.length));
   };
 
   source.connect(proc);
@@ -826,6 +990,7 @@ function stopManualRecording() {
   if (!manualRecorder) return;
 
   micBtn.classList.remove('recording');
+  updateAudioLevel(0);
 
   const { proc, source } = manualRecorder;
   proc.disconnect();
@@ -1099,6 +1264,14 @@ verifyToggle.addEventListener('click', () => {
   verifyEnabled = !verifyEnabled;
   ws.send(JSON.stringify({ type: 'toggle_verify', enabled: verifyEnabled }));
   updateVerifyUI();
+});
+
+// ---- Reconnect banner click ----
+reconnectBanner.addEventListener('click', () => {
+  reconnectAttempts = 0;
+  reconnectBanner.classList.remove('show');
+  setStatus('Reconnecting...', '');
+  connect();
 });
 
 // ---- Init ----

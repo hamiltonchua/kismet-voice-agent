@@ -381,37 +381,46 @@ async def websocket_endpoint(ws: WebSocket):
 
         # 0. Speaker verification gate
         if _should_verify():
-            import speaker_verify
-            t_sv = time.time()
-            enrolled = speaker_enrolled_embedding if speaker_enrolled_embedding is not None else _load_enrolled_embedding()
-            if enrolled is not None:
-                embedding = await loop.run_in_executor(None, speaker_verify.extract_embedding, audio_bytes)
-                score = speaker_verify.compare(embedding, enrolled)
-                sv_time = time.time() - t_sv
-                if score < speaker_verify.DEFAULT_THRESHOLD:
-                    print(f"[Speaker] Rejected: score={score:.3f} ({sv_time:.2f}s)")
-                    await ws.send_json({"type": "rejected", "score": round(float(score), 3), "time": round(sv_time, 2)})
-                    # If wake word mode, go back to sleep
-                    if WAKE_WORD_ENABLED and client_state == "awake":
-                        client_state = "sleeping"
-                        print("[State] Rejected speaker, going back to sleep")
-                        await ws.send_json({"type": "sleep"})
-                    return
-                print(f"[Speaker] Verified: score={score:.3f} ({sv_time:.2f}s)")
-                # Pass score along for UI display
-                await ws.send_json({"type": "verified", "score": round(score, 3), "time": round(sv_time, 2)})
+            try:
+                import speaker_verify
+                t_sv = time.time()
+                enrolled = speaker_enrolled_embedding if speaker_enrolled_embedding is not None else _load_enrolled_embedding()
+                if enrolled is not None:
+                    embedding = await loop.run_in_executor(None, speaker_verify.extract_embedding, audio_bytes)
+                    score = speaker_verify.compare(embedding, enrolled)
+                    sv_time = time.time() - t_sv
+                    if score < speaker_verify.DEFAULT_THRESHOLD:
+                        print(f"[Speaker] Rejected: score={score:.3f} ({sv_time:.2f}s)")
+                        await ws.send_json({"type": "rejected", "score": round(float(score), 3), "time": round(sv_time, 2)})
+                        # If wake word mode, go back to sleep
+                        if WAKE_WORD_ENABLED and client_state == "awake":
+                            client_state = "sleeping"
+                            print("[State] Rejected speaker, going back to sleep")
+                            await ws.send_json({"type": "sleep"})
+                        return
+                    print(f"[Speaker] Verified: score={score:.3f} ({sv_time:.2f}s)")
+                    # Pass score along for UI display
+                    await ws.send_json({"type": "verified", "score": round(score, 3), "time": round(sv_time, 2)})
+            except Exception as e:
+                print(f"[Speaker] Verification error: {e}")
+                await ws.send_json({"type": "error", "text": "Speaker verification failed — proceeding without it"})
 
         # 1. STT
         await ws.send_json({"type": "status", "text": "Transcribing..."})
         t0 = time.time()
-        user_text = await loop.run_in_executor(None, transcribe, audio_bytes)
+        try:
+            user_text = await loop.run_in_executor(None, transcribe, audio_bytes)
+        except Exception as e:
+            print(f"[STT] Error: {e}")
+            await ws.send_json({"type": "error", "text": "Couldn't understand that, try again"})
+            return
         stt_time = time.time() - t0
 
         if cancel_event.is_set():
             return
 
         if not user_text:
-            await ws.send_json({"type": "status", "text": "Didn't catch that. Try again?"})
+            await ws.send_json({"type": "error", "text": "Couldn't understand that, try again"})
             return
 
         await ws.send_json({"type": "transcript", "role": "user", "text": user_text, "time": round(stt_time, 2)})
@@ -427,6 +436,7 @@ async def websocket_endpoint(ws: WebSocket):
         first_sentence_time = None
         sentence_count = 0
         total_tts_time = 0
+        llm_error = False
 
         async for event_type, data in chat_stream(user_text, cancel_event):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
@@ -444,26 +454,34 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
 
                 await ws.send_json({"type": "status", "text": "Speaking..."})
-                tts_start = time.time()
-                audio_out, sr = await loop.run_in_executor(None, synthesize, data)
-                tts_time = time.time() - tts_start
-                total_tts_time += tts_time
+                try:
+                    tts_start = time.time()
+                    audio_out, sr = await loop.run_in_executor(None, synthesize, data)
+                    tts_time = time.time() - tts_start
+                    total_tts_time += tts_time
 
-                # Check cancellation after TTS
-                if cancel_event.is_set():
-                    continue
+                    # Check cancellation after TTS
+                    if cancel_event.is_set():
+                        continue
 
-                audio_b64 = base64.b64encode(audio_out).decode()
-                await ws.send_json({
-                    "type": "audio_chunk",
-                    "data": audio_b64,
-                    "sentence": data,
-                    "index": sentence_count,
-                })
-                sentence_count += 1
-                print(f"[TTS] Sentence {sentence_count}: \"{data[:40]}...\" ({tts_time:.2f}s)" if len(data) > 40 else f"[TTS] Sentence {sentence_count}: \"{data}\" ({tts_time:.2f}s)")
+                    audio_b64 = base64.b64encode(audio_out).decode()
+                    await ws.send_json({
+                        "type": "audio_chunk",
+                        "data": audio_b64,
+                        "sentence": data,
+                        "index": sentence_count,
+                    })
+                    sentence_count += 1
+                    print(f"[TTS] Sentence {sentence_count}: \"{data[:40]}...\" ({tts_time:.2f}s)" if len(data) > 40 else f"[TTS] Sentence {sentence_count}: \"{data}\" ({tts_time:.2f}s)")
+                except Exception as e:
+                    print(f"[TTS] Error: {e}")
+                    await ws.send_json({"type": "error", "text": "Audio generation failed — see text response above"})
 
             elif event_type == "cancelled":
+                # Check if this was an HTTP error (no text generated)
+                if not data:
+                    llm_error = True
+                    await ws.send_json({"type": "error", "text": "Something went wrong, try again"})
                 print(f"[WS] Response cancelled")
                 await ws.send_json({"type": "cancelled"})
                 return
