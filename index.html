@@ -324,8 +324,8 @@
 
 <script>
 const SAMPLE_RATE = 16000;
-const WAKE_CHUNK_SIZE = 1280;  // 80ms chunks for wake word detection
-const WAKE_CHUNK_MS = 80;
+const WAKE_CHUNK_SIZE = 2048;  // ~128ms chunks for wake word detection (must be power of 2)
+const WAKE_CHUNK_MS = 128;
 
 let ws;
 const chatEl = document.getElementById('chat');
@@ -576,6 +576,16 @@ async function enableWakeWordMode() {
   micBtn.classList.add('sleeping');
   micBtn.classList.remove('vad-active');
   
+  // Stop VAD if it was running
+  if (vadInstance) {
+    vadInstance.pause();
+  }
+  
+  // Tell server we're sleeping
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'set_state', state: 'sleeping' }));
+  }
+  
   // Start streaming audio for wake word detection
   await startWakeWordStreaming();
   
@@ -606,18 +616,21 @@ function disableWakeWordMode() {
   }
 }
 
-function handleWake() {
+async function handleWake() {
   clientState = 'awake';
   micBtn.classList.remove('sleeping');
   micBtn.classList.add('vad-active');
   
-  // Stop wake word streaming
+  // Stop wake word streaming first (releases mic)
   stopWakeWordStreaming();
   
-  // Start VAD for speech capture
-  startVAD();
+  // Small delay to let mic release fully
+  await new Promise(r => setTimeout(r, 200));
   
+  // Start VAD for speech capture
   setStatus('Listening...', 'listening');
+  await startVAD();
+  console.log('[WakeWord] Transitioned to VAD listening');
 }
 
 function handleSleep() {
@@ -690,7 +703,10 @@ function stopWakeWordStreaming() {
     streamingAudioContext.close();
     streamingAudioContext = null;
   }
-  // Don't stop the stream - we might reuse it
+  if (streamingStream) {
+    streamingStream.getTracks().forEach(t => t.stop());
+    streamingStream = null;
+  }
   console.log('[WakeWord] Audio streaming stopped');
 }
 

@@ -515,7 +515,7 @@ async def websocket_endpoint(ws: WebSocket):
                     client_state = "awake"
                     last_activity = time.time()
                     print(f"[State] Wake word detected, now awake")
-                    await ws.send_json({"type": "wake", "score": round(score, 3)})
+                    await ws.send_json({"type": "wake", "score": round(float(score), 3)})
 
             elif msg["type"] == "cancel":
                 print("[WS] Cancel requested")
