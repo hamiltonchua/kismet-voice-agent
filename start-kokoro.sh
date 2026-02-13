@@ -3,7 +3,7 @@
 
 # Activate conda environment
 eval "$(conda shell.bash hook)"
-conda activate chatterbox
+conda activate voice-agent
 
 # Isolate from ~/.local site-packages (numpy conflicts)
 export PYTHONNOUSERSITE=1
