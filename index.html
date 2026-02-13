@@ -560,7 +560,11 @@ function connect() {
         }
       } else {
         wakeToggle.style.display = 'none';
-        updateStatusForMode();
+        // No wake word — go straight to VAD (hands-free) mode
+        clientState = 'awake';
+        micBtn.classList.add('vad-active');
+        setStatus('Listening...', 'listening');
+        startVAD();
       }
       // Check speaker enrollment
       ws.send(JSON.stringify({ type: 'check_enrollment' }));
