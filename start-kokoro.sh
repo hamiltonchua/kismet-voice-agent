@@ -10,6 +10,7 @@ export PYTHONNOUSERSITE=1
 
 # Set TTS engine
 export TTS_ENGINE=kokoro
+export KOKORO_VOICE=bm_george
 
 # Feature flags (set to "false" to disable)
 export WAKE_WORD_ENABLED=${WAKE_WORD_ENABLED:-false}

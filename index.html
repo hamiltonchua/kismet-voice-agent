@@ -869,7 +869,12 @@ async function initVAD() {
   setStatus('Initializing voice detection...', 'active');
 
   try {
+    // Get mic stream with echo cancellation for VAD
+    const vadStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
     vadInstance = await vad.MicVAD.new({
+      stream: vadStream,
       positiveSpeechThreshold: 0.9,
       negativeSpeechThreshold: 0.35,
       minSpeechFrames: 8,
@@ -881,6 +886,7 @@ async function initVAD() {
       },
       onSpeechStart: () => {
         if (isSpeaking || isProcessing) {
+          // Only interrupt if speech confidence is high enough (avoid echo triggering)
           interrupt();
         }
         micBtn.classList.add('recording');
