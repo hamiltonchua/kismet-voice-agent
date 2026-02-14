@@ -588,7 +588,7 @@ function connect() {
     } else if (msg.type === 'transcript') {
       let metaText = msg.time ? `${msg.time}s` : null;
       if (msg.role === 'user' && lastVerifyScore !== null) {
-        const badge = lastVerifyScore >= 0.65 ? '✓' : '✗';
+        const badge = lastVerifyScore >= 0.50 ? '✓' : '✗';
         metaText = (metaText || '') + ` · speaker ${badge} ${lastVerifyScore.toFixed(2)}`;
       }
       addMessage(msg.role, msg.text, metaText);

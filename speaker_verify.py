@@ -120,24 +120,39 @@ def compare(embedding: np.ndarray, enrolled_embedding: np.ndarray) -> float:
 def enroll(audio_samples: list[bytes], save_path: Path = _PERSISTENT_DIR / "ham_embedding.npy") -> np.ndarray:
     """
     Enroll a speaker from multiple audio samples.
-    Extracts embeddings from each, averages them, saves to disk.
+    Extracts embeddings from each, merges with any existing enrollment,
+    then averages and saves to disk. This accumulates across environments
+    for more robust verification.
     Returns the averaged embedding.
     """
-    print(f"[Speaker] Enrolling from {len(audio_samples)} samples...")
-    embeddings = []
+    # Load existing raw embeddings if available
+    raw_path = save_path.parent / "ham_embeddings_raw.npy"
+    if raw_path.exists():
+        existing = list(np.load(str(raw_path)))
+        print(f"[Speaker] Found {len(existing)} existing embeddings, adding new samples...")
+    else:
+        existing = []
+
+    print(f"[Speaker] Enrolling from {len(audio_samples)} new samples...")
+    new_embeddings = []
     for i, audio in enumerate(audio_samples):
         t0 = time.time()
         emb = extract_embedding(audio)
         print(f"[Speaker] Sample {i+1}/{len(audio_samples)} embedded in {time.time()-t0:.2f}s")
-        embeddings.append(emb)
+        new_embeddings.append(emb)
 
-    avg_embedding = np.mean(embeddings, axis=0)
+    all_embeddings = existing + new_embeddings
+
+    avg_embedding = np.mean(all_embeddings, axis=0)
     # Normalize
     avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
 
     save_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save averaged embedding (used for verification)
     np.save(str(save_path), avg_embedding)
-    print(f"[Speaker] Enrollment saved to {save_path}")
+    # Save all raw embeddings (used for future re-averaging)
+    np.save(str(raw_path), np.array(all_embeddings))
+    print(f"[Speaker] Enrollment saved to {save_path} ({len(all_embeddings)} total samples)")
     return avg_embedding
 
 
