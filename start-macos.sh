@@ -13,6 +13,12 @@ elif [ -f ~/miniconda3/bin/conda ]; then
 fi
 conda activate voice-agent
 
+# Load .env if present (secrets, wake word config, etc.)
+ENV_FILE="$(dirname "$0")/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
+fi
+
 # Isolate from ~/.local site-packages
 export PYTHONNOUSERSITE=1
 
