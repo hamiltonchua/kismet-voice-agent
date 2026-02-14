@@ -1,0 +1,4 @@
+# macOS (Apple Silicon / MLX) dependencies
+-r requirements-common.txt
+mlx
+mlx-audio

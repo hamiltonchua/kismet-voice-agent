@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Kismet Voice Agent - Real-time voice chat with streaming TTS and interruption support.
-STT: faster-whisper (GPU)  |  LLM: OpenClaw  |  TTS: Chatterbox Turbo (GPU)
+Supports both Linux (CUDA) and macOS (Apple Silicon / MLX) backends.
 
-v0.5: Wake word detection (OpenWakeWord)
+v0.6: Multi-platform support (MLX on macOS, CUDA on Linux)
 """
 
 import asyncio
@@ -24,15 +24,23 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from platform_config import (
+    PLATFORM, STT_BACKEND, TTS_BACKEND,
+    MLX_STT_MODEL, MLX_TTS_MODEL, MLX_TTS_MODEL_FALLBACK,
+    print_config,
+)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+# Legacy env vars (used by faster-whisper / CUDA backends)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE", "float16")
-TTS_ENGINE = os.getenv("TTS_ENGINE", "chatterbox")  # "chatterbox" or "kokoro"
+TTS_ENGINE = os.getenv("TTS_ENGINE", "chatterbox")  # "chatterbox" or "kokoro" (legacy, used by CUDA/ONNX backends)
 KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_sky")
 CHATTERBOX_REF = os.getenv("CHATTERBOX_REF", None)  # Optional reference audio for voice cloning
+MLX_TTS_VOICE = os.getenv("MLX_TTS_VOICE", "af_sky")  # Voice for MLX Kokoro
 STT_SAMPLE_RATE = 16000
 
 # Wake word config
@@ -69,17 +77,30 @@ conversation_history = []
 def get_whisper():
     global whisper_model
     if whisper_model is None:
-        from faster_whisper import WhisperModel
-        print(f"[STT] Loading {WHISPER_MODEL} on {WHISPER_DEVICE}...")
-        whisper_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
-        print("[STT] Ready.")
+        if STT_BACKEND == "mlx-audio":
+            from mlx_audio.stt.utils import load_model
+            print(f"[STT] Loading MLX model: {MLX_STT_MODEL}...")
+            whisper_model = load_model(MLX_STT_MODEL)
+            print("[STT] MLX Whisper ready.")
+        else:
+            from faster_whisper import WhisperModel
+            print(f"[STT] Loading {WHISPER_MODEL} on {WHISPER_DEVICE}...")
+            whisper_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
+            print("[STT] Ready.")
     return whisper_model
 
 
 def get_tts():
     global tts_model, tts_sample_rate
     if tts_model is None:
-        if TTS_ENGINE == "chatterbox":
+        if TTS_BACKEND == "mlx-audio":
+            from mlx_audio.tts.utils import load_model
+            print(f"[TTS] Loading MLX model: {MLX_TTS_MODEL}...")
+            tts_model = load_model(MLX_TTS_MODEL)
+            # MLX Chatterbox uses 24000Hz, Kokoro uses 24000Hz
+            tts_sample_rate = 24000
+            print(f"[TTS] MLX TTS ready. Model: {MLX_TTS_MODEL}")
+        elif TTS_BACKEND == "chatterbox-cuda" or TTS_ENGINE == "chatterbox":
             from chatterbox.tts_turbo import ChatterboxTurboTTS
             print("[TTS] Loading Chatterbox Turbo...")
             tts_model = ChatterboxTurboTTS.from_pretrained(device="cuda")
@@ -133,6 +154,7 @@ def transcribe(audio_bytes: bytes) -> str:
     """Convert raw PCM 16-bit 16kHz mono audio to text."""
     model = get_whisper()
 
+    # Write to temp WAV file (needed by both backends)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         tmp_path = f.name
         with wave.open(f, "w") as wf:
@@ -142,10 +164,17 @@ def transcribe(audio_bytes: bytes) -> str:
             wf.writeframes(audio_bytes)
 
     try:
-        segments, info = model.transcribe(tmp_path, language=None, vad_filter=True, beam_size=5)
-        text = " ".join(seg.text.strip() for seg in segments).strip()
-        print(f"[STT] ({info.language}, {info.duration:.1f}s) → \"{text}\"")
-        return text
+        if STT_BACKEND == "mlx-audio":
+            result = model.transcribe(tmp_path)
+            text = result.get("text", "").strip()
+            lang = result.get("language", "?")
+            print(f"[STT] MLX ({lang}) → \"{text}\"")
+            return text
+        else:
+            segments, info = model.transcribe(tmp_path, language=None, vad_filter=True, beam_size=5)
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            print(f"[STT] ({info.language}, {info.duration:.1f}s) → \"{text}\"")
+            return text
     finally:
         os.unlink(tmp_path)
 
@@ -285,9 +314,34 @@ def synthesize(text: str) -> tuple[bytes, int]:
     """Convert text to speech, return (WAV bytes, sample_rate)."""
     model, sr = get_tts()
 
-    if TTS_ENGINE == "chatterbox":
+    if TTS_BACKEND == "mlx-audio":
+        import mlx.core as mx
+        # MLX Audio — works for both Chatterbox and Kokoro MLX models
+        is_chatterbox = "chatterbox" in MLX_TTS_MODEL.lower()
+        generate_kwargs = {"text": text}
+        if not is_chatterbox:
+            generate_kwargs["voice"] = MLX_TTS_VOICE
+            generate_kwargs["speed"] = 1.0
+            generate_kwargs["lang_code"] = "a"  # American English
+        if is_chatterbox and CHATTERBOX_REF:
+            generate_kwargs["audio_prompt_path"] = CHATTERBOX_REF
+
+        samples = None
+        for result in model.generate(**generate_kwargs):
+            audio_data = result.audio
+            # Convert mx.array to numpy if needed
+            if hasattr(audio_data, 'tolist'):
+                audio_data = np.array(audio_data.tolist(), dtype=np.float32)
+            elif not isinstance(audio_data, np.ndarray):
+                audio_data = np.array(audio_data, dtype=np.float32)
+            samples = audio_data if samples is None else np.concatenate([samples, audio_data])
+
+        if hasattr(result, 'sample_rate') and result.sample_rate:
+            sr = result.sample_rate
+
+    elif TTS_BACKEND == "chatterbox-cuda" or TTS_ENGINE == "chatterbox":
         import torch
-        # Chatterbox Turbo
+        # Chatterbox Turbo (CUDA)
         wav_tensor = model.generate(
             text,
             audio_prompt_path=CHATTERBOX_REF,
@@ -297,7 +351,7 @@ def synthesize(text: str) -> tuple[bytes, int]:
         # wav_tensor is (1, samples) float32 tensor
         samples = wav_tensor.squeeze(0).cpu().numpy()
     else:
-        # Kokoro
+        # Kokoro ONNX
         samples, sr = model.create(text, voice=KOKORO_VOICE, speed=1.0)
 
     # Convert to WAV bytes
@@ -306,8 +360,11 @@ def synthesize(text: str) -> tuple[bytes, int]:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sr)
-        # Convert float32 to int16
-        pcm = (samples * 32767).astype(np.int16)
+        # Ensure float32 → int16
+        if samples.dtype != np.int16:
+            pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+        else:
+            pcm = samples
         wf.writeframes(pcm.tobytes())
 
     return buf.getvalue(), sr
@@ -619,8 +676,9 @@ if __name__ == "__main__":
         kwargs["ssl_keyfile"] = str(key_file)
         print(f"[SSL] HTTPS enabled")
 
+    print_config()
     print(f"[LLM] OpenClaw endpoint: {OPENCLAW_URL}")
-    print(f"[TTS] Engine: {TTS_ENGINE}")
+    print(f"[TTS] Engine: {TTS_ENGINE} (backend: {TTS_BACKEND})")
     if WAKE_WORD_ENABLED:
         print(f"[WakeWord] Model: {WAKE_WORD_MODEL}, Threshold: {WAKE_WORD_THRESHOLD}")
     uvicorn.run(app, host="0.0.0.0", port=8765, **kwargs)

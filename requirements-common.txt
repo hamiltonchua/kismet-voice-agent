@@ -1,0 +1,11 @@
+# Shared dependencies for Kismet Voice Agent
+fastapi
+uvicorn[standard]
+httpx
+numpy
+
+# Speaker verification (Phase 5)
+speechbrain>=1.0.0
+
+# Wake word detection (Phase 4)
+openwakeword

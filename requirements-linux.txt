@@ -1,0 +1,5 @@
+# Linux (CUDA) dependencies
+-r requirements-common.txt
+faster-whisper
+chatterbox-tts
+kokoro-onnx
