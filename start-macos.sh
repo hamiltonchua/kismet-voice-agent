@@ -32,7 +32,7 @@ export CHATTERBOX_REF="${CHATTERBOX_REF:-$SCRIPT_DIR/voices/rosamund_pike.wav}"
 
 # Feature flags (set to "false" to disable)
 export WAKE_WORD_ENABLED=${WAKE_WORD_ENABLED:-false}
-export SPEAKER_VERIFY=${SPEAKER_VERIFY:-false}
+export SPEAKER_VERIFY=${SPEAKER_VERIFY:-auto}
 
 # Unbuffered output for logging
 export PYTHONUNBUFFERED=1

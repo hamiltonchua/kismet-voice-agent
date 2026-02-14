@@ -18,16 +18,42 @@ import numpy as np
 import torch
 
 # ---------------------------------------------------------------------------
+# Compatibility patches for speechbrain 1.0.3 + newer deps
+# ---------------------------------------------------------------------------
+# torchaudio 2.10+ removed list_audio_backends
+import torchaudio
+if not hasattr(torchaudio, "list_audio_backends"):
+    torchaudio.list_audio_backends = lambda: ["default"]
+
+# huggingface_hub >= 1.0 removed use_auth_token kwarg
+# speechbrain 1.0.3 also tries to fetch custom.py which no longer exists in the repo
+# — its from_hparams catches ValueError but HF hub raises EntryNotFoundError instead
+import huggingface_hub
+_orig_hf_download = huggingface_hub.hf_hub_download
+def _patched_hf_download(*args, **kwargs):
+    kwargs.pop("use_auth_token", None)
+    try:
+        return _orig_hf_download(*args, **kwargs)
+    except huggingface_hub.errors.EntryNotFoundError:
+        # Re-raise as ValueError so speechbrain's from_hparams catches it
+        raise ValueError(f"File not found in repo")
+huggingface_hub.hf_hub_download = _patched_hf_download
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 VOICES_DIR = Path(__file__).parent / "voices"
 _PERSISTENT_DIR = Path.home() / ".kismet" / "voices"
-# Prefer persistent path in home directory, fall back to repo-local
-ENROLLMENT_PATH = (
-    _PERSISTENT_DIR / "ham_embedding.npy"
-    if (_PERSISTENT_DIR / "ham_embedding.npy").exists()
-    else VOICES_DIR / "ham_embedding.npy"
-)
+
+def _enrollment_path() -> Path:
+    """Resolve enrollment path dynamically (persistent > repo-local)."""
+    persistent = _PERSISTENT_DIR / "ham_embedding.npy"
+    if persistent.exists():
+        return persistent
+    return VOICES_DIR / "ham_embedding.npy"
+
+# Keep for backward compat but prefer _enrollment_path()
+ENROLLMENT_PATH = _enrollment_path()
 DEFAULT_THRESHOLD = float(os.getenv("SPEAKER_VERIFY_THRESHOLD", "0.50"))
 
 # ---------------------------------------------------------------------------
@@ -115,16 +141,17 @@ def enroll(audio_samples: list[bytes], save_path: Path = _PERSISTENT_DIR / "ham_
     return avg_embedding
 
 
-def has_enrollment(path: Path = ENROLLMENT_PATH) -> bool:
+def has_enrollment(path: Path = None) -> bool:
     """Check if an enrollment file exists."""
-    return path.exists()
+    return (path or _enrollment_path()).exists()
 
 
-def load_enrollment(path: Path = ENROLLMENT_PATH) -> Optional[np.ndarray]:
+def load_enrollment(path: Path = None) -> Optional[np.ndarray]:
     """Load enrolled embedding from disk. Returns None if not found."""
-    if not path.exists():
+    p = path or _enrollment_path()
+    if not p.exists():
         return None
-    return np.load(str(path))
+    return np.load(str(p))
 
 
 def verify(audio_bytes: bytes, threshold: float = DEFAULT_THRESHOLD) -> tuple[bool, float]:
