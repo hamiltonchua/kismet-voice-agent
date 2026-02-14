@@ -26,6 +26,10 @@ export MLX_STT_MODEL=${MLX_STT_MODEL:-mlx-community/whisper-large-v3-turbo-asr-f
 export MLX_TTS_MODEL=${MLX_TTS_MODEL:-mlx-community/Kokoro-82M-bf16}
 export MLX_TTS_VOICE=${MLX_TTS_VOICE:-af_sky}
 
+# Voice cloning reference
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export CHATTERBOX_REF="${CHATTERBOX_REF:-$SCRIPT_DIR/voices/rosamund_pike.wav}"
+
 # Feature flags (set to "false" to disable)
 export WAKE_WORD_ENABLED=${WAKE_WORD_ENABLED:-false}
 export SPEAKER_VERIFY=${SPEAKER_VERIFY:-false}

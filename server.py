@@ -339,7 +339,7 @@ def synthesize(text: str) -> tuple[bytes, int]:
             generate_kwargs["speed"] = 1.0
             generate_kwargs["lang_code"] = "a"  # American English
         if is_chatterbox and CHATTERBOX_REF:
-            generate_kwargs["audio_prompt_path"] = CHATTERBOX_REF
+            generate_kwargs["ref_audio"] = CHATTERBOX_REF
 
         samples = None
         for result in model.generate(**generate_kwargs):
