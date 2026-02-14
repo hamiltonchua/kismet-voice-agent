@@ -51,7 +51,22 @@ IDLE_TIMEOUT_SEC = float(os.getenv("IDLE_TIMEOUT_SEC", "30"))  # Return to sleep
 
 # OpenClaw gateway
 OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://127.0.0.1:18789/v1/chat/completions")
-OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "92c0ca8eeb7054cd6587b7368e83f25673e41c7b0cf9985b")
+
+def _read_openclaw_token() -> str:
+    """Read token from OpenClaw config file, fallback to env var."""
+    token = os.getenv("OPENCLAW_TOKEN")
+    if token:
+        return token
+    try:
+        import json
+        config_path = Path.home() / ".openclaw" / "openclaw.json"
+        with open(config_path) as f:
+            config = json.load(f)
+        return config["gateway"]["auth"]["token"]
+    except Exception:
+        return ""
+
+OPENCLAW_TOKEN = _read_openclaw_token()
 OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
 
 SPEAKER_VERIFY = os.getenv("SPEAKER_VERIFY", "auto")  # "true", "false", or "auto" (verify if enrolled)
@@ -165,9 +180,9 @@ def transcribe(audio_bytes: bytes) -> str:
 
     try:
         if STT_BACKEND == "mlx-audio":
-            result = model.transcribe(tmp_path)
-            text = result.get("text", "").strip()
-            lang = result.get("language", "?")
+            result = model.generate(tmp_path)
+            text = (result.text or "").strip()
+            lang = getattr(result, "language", "?") or "?"
             print(f"[STT] MLX ({lang}) → \"{text}\"")
             return text
         else:

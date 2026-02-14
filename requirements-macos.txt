@@ -2,3 +2,5 @@
 -r requirements-common.txt
 mlx
 mlx-audio
+misaki[en]
+num2words

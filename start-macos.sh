@@ -23,7 +23,7 @@ export TTS_BACKEND=mlx-audio
 
 # MLX models (defaults, override as needed)
 export MLX_STT_MODEL=${MLX_STT_MODEL:-mlx-community/whisper-large-v3-turbo-asr-fp16}
-export MLX_TTS_MODEL=${MLX_TTS_MODEL:-mlx-community/chatterbox-fp16}
+export MLX_TTS_MODEL=${MLX_TTS_MODEL:-mlx-community/Kokoro-82M-bf16}
 export MLX_TTS_VOICE=${MLX_TTS_VOICE:-af_sky}
 
 # Feature flags (set to "false" to disable)
