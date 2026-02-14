@@ -81,66 +81,85 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
 # ---------------------------------------------------------------------------
 # Global singletons
 # ---------------------------------------------------------------------------
+import threading
+
 whisper_model = None
 speaker_enrolled_embedding = None  # Cached enrollment embedding
 tts_model = None
 tts_sample_rate = None
 wake_word_model = None
 conversation_history = []
+_model_lock = threading.Lock()  # Prevent concurrent MLX/GPU model loads
+_models_ready = False  # True once startup preload completes
 
 
 def get_whisper():
     global whisper_model
-    if whisper_model is None:
-        if STT_BACKEND == "mlx-audio":
-            from mlx_audio.stt.utils import load_model
-            print(f"[STT] Loading MLX model: {MLX_STT_MODEL}...")
-            whisper_model = load_model(MLX_STT_MODEL)
-            print("[STT] MLX Whisper ready.")
-        else:
-            from faster_whisper import WhisperModel
-            print(f"[STT] Loading {WHISPER_MODEL} on {WHISPER_DEVICE}...")
-            whisper_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
-            print("[STT] Ready.")
+    with _model_lock:
+        if whisper_model is None:
+            if STT_BACKEND == "mlx-audio":
+                from mlx_audio.stt.utils import load_model
+                print(f"[STT] Loading MLX model: {MLX_STT_MODEL}...")
+                whisper_model = load_model(MLX_STT_MODEL)
+                print("[STT] MLX Whisper ready.")
+            else:
+                from faster_whisper import WhisperModel
+                print(f"[STT] Loading {WHISPER_MODEL} on {WHISPER_DEVICE}...")
+                whisper_model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
+                print("[STT] Ready.")
     return whisper_model
 
 
 def get_tts():
     global tts_model, tts_sample_rate
-    if tts_model is None:
-        if TTS_BACKEND == "mlx-audio":
-            from mlx_audio.tts.utils import load_model
-            print(f"[TTS] Loading MLX model: {MLX_TTS_MODEL}...")
-            tts_model = load_model(MLX_TTS_MODEL)
-            # MLX Chatterbox uses 24000Hz, Kokoro uses 24000Hz
-            tts_sample_rate = 24000
-            print(f"[TTS] MLX TTS ready. Model: {MLX_TTS_MODEL}")
-        elif TTS_BACKEND == "chatterbox-cuda" or TTS_ENGINE == "chatterbox":
-            from chatterbox.tts_turbo import ChatterboxTurboTTS
-            print("[TTS] Loading Chatterbox Turbo...")
-            tts_model = ChatterboxTurboTTS.from_pretrained(device="cuda")
-            tts_sample_rate = tts_model.sr
-            print(f"[TTS] Chatterbox ready. Sample rate: {tts_sample_rate}Hz")
-            if CHATTERBOX_REF:
-                print(f"[TTS] Using reference voice: {CHATTERBOX_REF}")
-        else:
-            import kokoro_onnx
-            print("[TTS] Loading Kokoro...")
-            tts_model = kokoro_onnx.Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
-            tts_sample_rate = 22050  # Kokoro sample rate
-            print(f"[TTS] Kokoro ready. Voice: {KOKORO_VOICE}")
+    with _model_lock:
+        if tts_model is None:
+            if TTS_BACKEND == "mlx-audio":
+                from mlx_audio.tts.utils import load_model
+                print(f"[TTS] Loading MLX model: {MLX_TTS_MODEL}...")
+                tts_model = load_model(MLX_TTS_MODEL)
+                # MLX Chatterbox uses 24000Hz, Kokoro uses 24000Hz
+                tts_sample_rate = 24000
+                print(f"[TTS] MLX TTS ready. Model: {MLX_TTS_MODEL}")
+            elif TTS_BACKEND == "chatterbox-cuda" or TTS_ENGINE == "chatterbox":
+                from chatterbox.tts_turbo import ChatterboxTurboTTS
+                print("[TTS] Loading Chatterbox Turbo...")
+                tts_model = ChatterboxTurboTTS.from_pretrained(device="cuda")
+                tts_sample_rate = tts_model.sr
+                print(f"[TTS] Chatterbox ready. Sample rate: {tts_sample_rate}Hz")
+                if CHATTERBOX_REF:
+                    print(f"[TTS] Using reference voice: {CHATTERBOX_REF}")
+            else:
+                import kokoro_onnx
+                print("[TTS] Loading Kokoro...")
+                tts_model = kokoro_onnx.Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
+                tts_sample_rate = 22050  # Kokoro sample rate
+                print(f"[TTS] Kokoro ready. Voice: {KOKORO_VOICE}")
     return tts_model, tts_sample_rate
 
 
 
 def get_wake_word():
     global wake_word_model
-    if wake_word_model is None and WAKE_WORD_ENABLED:
-        from openwakeword.model import Model
-        print(f"[WakeWord] Loading model: {WAKE_WORD_MODEL}...")
-        wake_word_model = Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework='onnx')
-        print(f"[WakeWord] Ready. Threshold: {WAKE_WORD_THRESHOLD}")
+    with _model_lock:
+        if wake_word_model is None and WAKE_WORD_ENABLED:
+            from openwakeword.model import Model
+            print(f"[WakeWord] Loading model: {WAKE_WORD_MODEL}...")
+            wake_word_model = Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework='onnx')
+            print(f"[WakeWord] Ready. Threshold: {WAKE_WORD_THRESHOLD}")
     return wake_word_model
+
+
+def preload_models():
+    """Load all models at startup (called once). Prevents per-connection loading."""
+    global _models_ready
+    print("[Startup] Preloading models...")
+    get_whisper()
+    get_tts()
+    if WAKE_WORD_ENABLED:
+        get_wake_word()
+    _models_ready = True
+    print("[Startup] All models ready.")
 
 
 def _should_verify() -> bool:
@@ -391,6 +410,13 @@ def synthesize(text: str) -> tuple[bytes, int]:
 app = FastAPI(title="Kismet Voice Agent")
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Preload all models at server start, not per-connection."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, preload_models)
+
+
 @app.get("/")
 async def index():
     html_path = Path(__file__).parent / "index.html"
@@ -403,12 +429,8 @@ async def websocket_endpoint(ws: WebSocket):
     print("[WS] Client connected")
 
     loop = asyncio.get_event_loop()
-    
-    # Load models
-    await loop.run_in_executor(None, get_whisper)
-    await loop.run_in_executor(None, get_tts)
-    if WAKE_WORD_ENABLED:
-        await loop.run_in_executor(None, get_wake_word)
+
+    # Models are preloaded at startup — no per-connection loading needed
     
     # Send ready with wake word config
     await ws.send_json({
