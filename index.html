@@ -920,7 +920,9 @@ async function startWakeWordStreaming() {
       for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
       updateAudioLevel(Math.sqrt(sum / float32.length));
 
-      if (clientState !== 'sleeping' || !ws || ws.readyState !== WebSocket.OPEN) return;
+      // Send audio_stream when sleeping (normal wake word) OR in meeting mode (meeting wake word)
+      const shouldStream = clientState === 'sleeping' || (meetingMode && !meetingCommandCapture);
+      if (!shouldStream || !ws || ws.readyState !== WebSocket.OPEN) return;
       
       const int16 = new Int16Array(float32.length);
       for (let i = 0; i < float32.length; i++) {
