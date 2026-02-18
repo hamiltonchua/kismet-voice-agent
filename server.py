@@ -540,15 +540,45 @@ _DIST_DIR = Path(__file__).parent / "frontend" / "dist"
 _DIST_INDEX = _DIST_DIR / "index.html"
 _FALLBACK_HTML = Path(__file__).parent / "index.html"
 
-if _DIST_DIR.exists() and (_DIST_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets")
+from fastapi.responses import FileResponse
 
+# Serve /assets/ files — check dist/assets first, then fall back to dist root
+# (onnxruntime-web requests .wasm/.mjs files relative to the JS bundle in /assets/)
+@app.get("/assets/{filename:path}")
+async def serve_assets(filename: str):
+    # Try dist/assets first
+    fpath = _DIST_DIR / "assets" / filename
+    if fpath.exists() and fpath.is_file():
+        return FileResponse(str(fpath))
+    # Fall back to dist root (for wasm/onnx files copied by vite-plugin-static-copy)
+    fpath = _DIST_DIR / filename
+    if fpath.exists() and fpath.is_file():
+        return FileResponse(str(fpath))
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 @app.get("/")
 async def index():
     if _DIST_INDEX.exists():
         return HTMLResponse(_DIST_INDEX.read_text())
     return HTMLResponse(_FALLBACK_HTML.read_text())
+
+@app.get("/{filename:path}")
+async def serve_static(filename: str):
+    """Serve static files from frontend/dist/ (e.g. .onnx, .wasm, .svg)"""
+    if filename:
+        # Try exact path first (e.g. /assets/foo.js → dist/assets/foo.js)
+        fpath = _DIST_DIR / filename
+        if fpath.exists() and fpath.is_file():
+            return FileResponse(str(fpath))
+        # Fallback: strip /assets/ prefix and check dist root
+        # (onnxruntime-web requests wasm files relative to the JS bundle in /assets/)
+        if filename.startswith("assets/"):
+            fpath = _DIST_DIR / filename.removeprefix("assets/")
+            if fpath.exists() and fpath.is_file():
+                return FileResponse(str(fpath))
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.websocket("/ws")

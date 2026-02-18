@@ -17,17 +17,11 @@ export function Header({ statusText, statusClass, connectionDot, meetingMode, en
   // Mobile-only top bar — hidden on desktop (md+)
   return (
     <header
-      className="md:hidden"
+      className="flex md:hidden items-center justify-between sticky top-0 z-30"
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
         padding: '12px 16px',
         background: 'var(--surface)',
         borderBottom: '1px solid rgba(255,255,255,0.08)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 30,
       }}
     >
       <h1 style={{ fontSize: '1.1rem', fontWeight: 600 }}>Kismet</h1>

@@ -1,5 +1,5 @@
 // frontend/src/hooks/useVAD.ts
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useEffect } from 'react'
 import { MicVAD } from '@ricky0123/vad-web'
 
 interface UseVADOptions {
@@ -12,6 +12,14 @@ export function useVAD({ onSpeechStart, onSpeechEnd, onFrameProcessed }: UseVADO
   const vadRef = useRef<MicVAD | null>(null)
   const listeningRef = useRef(false)
 
+  // Use refs for callbacks to avoid stale closures in MicVAD
+  const onSpeechStartRef = useRef(onSpeechStart)
+  const onSpeechEndRef = useRef(onSpeechEnd)
+  const onFrameProcessedRef = useRef(onFrameProcessed)
+  useEffect(() => { onSpeechStartRef.current = onSpeechStart }, [onSpeechStart])
+  useEffect(() => { onSpeechEndRef.current = onSpeechEnd }, [onSpeechEnd])
+  useEffect(() => { onFrameProcessedRef.current = onFrameProcessed }, [onFrameProcessed])
+
   const init = useCallback(async () => {
     if (vadRef.current) return
 
@@ -22,17 +30,17 @@ export function useVAD({ onSpeechStart, onSpeechEnd, onFrameProcessed }: UseVADO
       preSpeechPadMs: 300,
       redemptionMs: 600,
       onFrameProcessed: (probs) => {
-        onFrameProcessed?.(probs)
+        onFrameProcessedRef.current?.(probs)
       },
       onSpeechStart: () => {
-        onSpeechStart()
+        onSpeechStartRef.current()
       },
       onSpeechEnd: (audio) => {
-        onSpeechEnd(audio)
+        onSpeechEndRef.current(audio)
       },
     })
     console.log('[VAD] Initialized')
-  }, [onSpeechStart, onSpeechEnd, onFrameProcessed])
+  }, [])
 
   const start = useCallback(async () => {
     if (!vadRef.current) await init()

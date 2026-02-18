@@ -301,7 +301,12 @@ export default function App() {
 
     if (type === 'ready') {
       const wwe = msg.wake_word_enabled as boolean
-      const wwn = msg.wake_word as string | null
+      let wwn = msg.wake_word as string | null
+      // Extract friendly name from .ppn file path (e.g. "/path/to/hey-friday_en_mac.ppn" → "Hey Friday")
+      if (wwn && wwn.endsWith('.ppn')) {
+        const base = wwn.split('/').pop()!.replace(/_en.*\.ppn$/, '').replace(/[-_]/g, ' ')
+        wwn = base.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      }
       const it = (msg.idle_timeout as number) || 30
       setWakeWordEnabled(wwe)
       wakeWordEnabledRef.current = wwe

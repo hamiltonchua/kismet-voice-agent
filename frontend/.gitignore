@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# Build-time assets (copied from node_modules by vite-plugin-static-copy)
+public/ort-wasm*
+public/vad.worklet*
+public/silero_vad*
