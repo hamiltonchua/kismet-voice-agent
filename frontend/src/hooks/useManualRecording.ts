@@ -2,12 +2,6 @@
 import { useRef, useCallback } from 'react'
 import { SAMPLE_RATE } from '../constants'
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-  return btoa(binary)
-}
 
 interface UseManualRecordingOptions {
   onAudioLevel: (rms: number) => void

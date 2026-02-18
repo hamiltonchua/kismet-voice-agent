@@ -15,17 +15,12 @@ export function useVAD({ onSpeechStart, onSpeechEnd, onFrameProcessed }: UseVADO
   const init = useCallback(async () => {
     if (vadRef.current) return
 
-    const vadStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    })
-
     vadRef.current = await MicVAD.new({
-      stream: vadStream,
       positiveSpeechThreshold: 0.9,
       negativeSpeechThreshold: 0.35,
-      minSpeechFrames: 8,
-      preSpeechPadFrames: 10,
-      redemptionFrames: 20,
+      minSpeechMs: 250,
+      preSpeechPadMs: 300,
+      redemptionMs: 600,
       onFrameProcessed: (probs) => {
         onFrameProcessed?.(probs)
       },
