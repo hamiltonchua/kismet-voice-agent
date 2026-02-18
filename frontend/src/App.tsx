@@ -15,7 +15,7 @@ import { Controls } from './components/Controls'
 import { EnrollModal } from './components/EnrollModal'
 import { ReconnectBanner } from './components/ReconnectBanner'
 import { MeetingBanner } from './components/MeetingBanner'
-import { StatusDisplay } from './components/StatusDisplay'
+import { SettingsDrawer } from './components/SettingsDrawer'
 
 export default function App() {
   // ---- Connection state ----
@@ -574,10 +574,18 @@ export default function App() {
     send({ type: 'toggle_verify', enabled: next })
   }, [verifyEnabled, send])
 
-  return (
-    <div className="flex flex-col items-center min-h-screen" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
-      <Toaster position="top-center" theme="dark" />
+  // Derive connection dot state from existing state
+  const connectionDot: 'connected' | 'disconnected' | 'sleeping' | 'connecting' = showReconnectBanner
+    ? 'disconnected'
+    : micState === 'sleeping'
+    ? 'sleeping'
+    : _connectionStatus === 'connecting' || _connectionStatus === 'reconnecting'
+    ? 'connecting'
+    : 'connected'
 
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg)', color: 'var(--text)', overflow: 'hidden' }}>
+      <Toaster position="top-right" theme="dark" />
       <ReconnectBanner
         show={showReconnectBanner}
         onReconnect={() => {
@@ -587,43 +595,136 @@ export default function App() {
         }}
       />
 
+      {/* Mobile top bar */}
       <Header
+        statusText={statusText}
+        statusClass={statusClass}
+        connectionDot={connectionDot}
+        meetingMode={meetingMode}
         enrolled={enrolled}
         verifyEnabled={verifyEnabled}
-        meetingMode={meetingMode}
         onEnroll={handleEnrollStart}
         onVerifyToggle={handleVerifyToggle}
         onMeetingToggle={() => meetingMode ? exitMeetingMode() : enterMeetingMode()}
       />
 
-      <MeetingBanner show={meetingMode} meetingCommandCapture={meetingCommandCaptureRef} />
+      {/* Two-panel grid — desktop only */}
+      <div
+        className="hidden md:grid"
+        style={{
+          flex: 1,
+          display: 'grid',
+          gridTemplateColumns: '320px 1fr',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Left panel — Control Center */}
+        <div
+          style={{
+            background: 'var(--surface)',
+            borderRight: meetingMode ? '3px solid var(--accent)' : '1px solid rgba(255,255,255,0.08)',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '28px 20px 20px',
+            gap: 20,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Top: Title + status */}
+          <div>
+            <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>Kismet</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className={`conn-dot ${connectionDot}`} />
+              <span
+                className={`status-${statusClass || 'default'}`}
+                style={{ fontSize: '0.82rem', transition: 'color 0.2s' }}
+              >
+                {meetingMode ? 'Meeting Mode — Recording' : statusText}
+              </span>
+            </div>
+          </div>
 
-      <StatusDisplay text={statusText} statusClass={statusClass} />
+          {/* Middle: Button cluster */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0 }}>
+            <Controls
+              micState={micState}
+              wakeWordActive={wakeWordActive}
+              wakeWordEnabled={wakeWordEnabled}
+              audioLevelRingRef={audioLevelRingRef}
+              meetingMode={meetingMode}
+              onMicDown={handleMicDown}
+              onMicUp={handleMicUp}
+              onMicLeave={() => { if (isRecording()) stopManual() }}
+              onClear={handleClear}
+              onWakeToggle={handleWakeToggle}
+              onMeetingToggle={() => meetingMode ? exitMeetingMode() : enterMeetingMode()}
+              send={send}
+              vadRef={vadRef}
+              meetingModeRef={meetingModeRef}
+              wakeWordEnabledRef={wakeWordEnabledRef}
+              startWakeStream={startWakeStream}
+              setStatus={setStatus}
+              wakeWordName={wakeWordName}
+            />
+          </div>
 
-      <ChatDisplay
-        messages={messages}
-        meetingEntries={meetingEntries}
-        meetingMode={meetingMode}
-      />
+          {/* Bottom: Settings gear */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <SettingsDrawer
+              enrolled={enrolled}
+              verifyEnabled={verifyEnabled}
+              onEnroll={handleEnrollStart}
+              onVerifyToggle={handleVerifyToggle}
+            />
+          </div>
+        </div>
 
-      <Controls
-        micState={micState}
-        wakeWordActive={wakeWordActive}
-        wakeWordEnabled={wakeWordEnabled}
-        audioLevelRingRef={audioLevelRingRef}
-        meetingMode={meetingMode}
-        onMicDown={handleMicDown}
-        onMicUp={handleMicUp}
-        onMicLeave={() => { if (isRecording()) stopManual() }}
-        onClear={handleClear}
-        onWakeToggle={handleWakeToggle}
-        send={send}
-        vadRef={vadRef}
-        meetingModeRef={meetingModeRef}
-        wakeWordEnabledRef={wakeWordEnabledRef}
-        startWakeStream={startWakeStream}
-        setStatus={setStatus}
-      />
+        {/* Right panel — Conversation */}
+        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <MeetingBanner show={meetingMode} meetingCommandCapture={meetingCommandCaptureRef} />
+          <ChatDisplay
+            messages={messages}
+            meetingEntries={meetingEntries}
+            meetingMode={meetingMode}
+          />
+        </div>
+      </div>
+
+      {/* Mobile layout — single column */}
+      <div
+        className="flex flex-col md:hidden"
+        style={{ flex: 1, overflow: 'hidden' }}
+      >
+        <MeetingBanner show={meetingMode} meetingCommandCapture={meetingCommandCaptureRef} />
+        <ChatDisplay
+          messages={messages}
+          meetingEntries={meetingEntries}
+          meetingMode={meetingMode}
+        />
+        {/* Mobile bottom dock */}
+        <div className="mobile-dock">
+          <Controls
+            micState={micState}
+            wakeWordActive={wakeWordActive}
+            wakeWordEnabled={wakeWordEnabled}
+            audioLevelRingRef={audioLevelRingRef}
+            meetingMode={meetingMode}
+            onMicDown={handleMicDown}
+            onMicUp={handleMicUp}
+            onMicLeave={() => { if (isRecording()) stopManual() }}
+            onClear={handleClear}
+            onWakeToggle={handleWakeToggle}
+            onMeetingToggle={() => meetingMode ? exitMeetingMode() : enterMeetingMode()}
+            send={send}
+            vadRef={vadRef}
+            meetingModeRef={meetingModeRef}
+            wakeWordEnabledRef={wakeWordEnabledRef}
+            startWakeStream={startWakeStream}
+            setStatus={setStatus}
+            wakeWordName={wakeWordName}
+          />
+        </div>
+      </div>
 
       <EnrollModal
         show={showEnrollModal}
