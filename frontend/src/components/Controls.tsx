@@ -1,5 +1,6 @@
 // frontend/src/components/Controls.tsx
 import { useRef, useCallback } from 'react'
+import { Trash2, Ear, EarOff, Radio } from 'lucide-react'
 import { float32ToBase64 } from '../hooks/useManualRecording'
 import { SAMPLE_RATE } from '../constants'
 import type { MicVAD } from '@ricky0123/vad-web'
@@ -15,22 +16,26 @@ interface ControlsProps {
   onMicLeave: () => void
   onClear: () => void
   onWakeToggle: () => void
+  onMeetingToggle: () => void
   send: (msg: Record<string, unknown>) => void
   vadRef: React.RefObject<MicVAD | null>
   meetingModeRef: React.RefObject<boolean>
   wakeWordEnabledRef: React.RefObject<boolean>
   startWakeStream: () => Promise<void>
   setStatus: (text: string, cls?: 'active' | 'listening' | 'sleeping' | '') => void
+  wakeWordName: string | null
 }
 
 export function Controls({
   micState, wakeWordActive, wakeWordEnabled, audioLevelRingRef,
   meetingMode, onMicDown, onMicUp, onMicLeave,
-  onClear, onWakeToggle, send, vadRef, meetingModeRef,
-  wakeWordEnabledRef, startWakeStream, setStatus,
+  onClear, onWakeToggle, onMeetingToggle,
+  send, vadRef, meetingModeRef,
+  wakeWordEnabledRef, startWakeStream, setStatus, wakeWordName,
 }: ControlsProps) {
   void wakeWordEnabledRef
   void startWakeStream
+
   const commandRecordingRef = useRef(false)
   const commandChunksRef = useRef<Float32Array[]>([])
   const commandStreamRef = useRef<MediaStream | null>(null)
@@ -38,7 +43,7 @@ export function Controls({
   const commandProcessorRef = useRef<ScriptProcessorNode | null>(null)
 
   const micBtnClass = [
-    'btn',
+    'mic-btn',
     micState === 'recording' ? 'recording' : '',
     micState === 'vad-active' ? 'vad-active' : '',
     micState === 'sleeping' ? 'sleeping' : '',
@@ -93,27 +98,31 @@ export function Controls({
     setStatus('Processing command...', 'active')
   }, [vadRef, meetingModeRef, send, setStatus])
 
-  const wakeToggleSvg = wakeWordEnabled ? (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
-      <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
-      <path d="M12 19v2"/><path d="M8 21h8"/>
-      {!wakeWordActive && <path d="M3 3l18 18" strokeWidth="2"/>}
-    </svg>
-  ) : (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2a3 3 0 0 0-3 3v4a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
-      <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
-      <path d="M12 19v2"/><path d="M8 21h8"/>
-    </svg>
-  )
+  const WakeIcon = wakeWordActive ? Ear : EarOff
 
   return (
     <>
+      {/* Floating meeting command button — visible when in meeting mode */}
       {meetingMode && (
         <button
-          id="commandBtn"
-          style={{ display: 'block' }}
+          style={{
+            position: 'fixed',
+            bottom: 80,
+            right: 24,
+            width: 52,
+            height: 52,
+            borderRadius: '50%',
+            background: 'var(--accent)',
+            border: 'none',
+            color: 'white',
+            fontSize: '1.3rem',
+            cursor: 'pointer',
+            zIndex: 50,
+            boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
           title="Hold to give Kismet a command"
           onMouseDown={(e) => { e.preventDefault(); startCommandRecording() }}
           onMouseUp={(e) => { e.preventDefault(); stopCommandRecording() }}
@@ -125,19 +134,10 @@ export function Controls({
         </button>
       )}
 
-      <div id="controls">
-        <button className="btn" id="clearBtn" title="Clear conversation" onClick={onClear}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6"/>
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-            <path d="M10 11v6"/><path d="M14 11v6"/>
-            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-          </svg>
-        </button>
-
+      {/* Mic button */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
         <button
           className={micBtnClass}
-          id="micBtn"
           title="Hold to talk, or say the wake word"
           onMouseDown={onMicDown}
           onMouseUp={onMicUp}
@@ -145,8 +145,8 @@ export function Controls({
           onTouchStart={onMicDown}
           onTouchEnd={onMicUp}
         >
-          <div id="audioLevel" ref={audioLevelRingRef} />
-          <svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <div className="audio-ring" ref={audioLevelRingRef} />
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
             <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
             <line x1="12" y1="19" x2="12" y2="23"/>
@@ -154,14 +154,39 @@ export function Controls({
           </svg>
         </button>
 
-        <button
-          className={`btn ${wakeWordActive ? 'active' : ''}`}
-          id="wakeToggle"
-          title={wakeWordEnabled ? 'Toggle wake word mode' : 'Toggle hands-free listening'}
-          onClick={onWakeToggle}
-        >
-          {wakeToggleSvg}
-        </button>
+        {/* Secondary buttons row */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <button
+            className="ctrl-btn"
+            title="Clear conversation"
+            onClick={onClear}
+          >
+            <Trash2 size={18} />
+          </button>
+
+          <button
+            className={`ctrl-btn ${wakeWordActive ? 'wake-active' : ''}`}
+            title={wakeWordEnabled ? 'Toggle wake word mode' : 'Toggle hands-free listening'}
+            onClick={onWakeToggle}
+          >
+            <WakeIcon size={18} />
+          </button>
+
+          <button
+            className={`ctrl-btn ${meetingMode ? 'meeting-active' : ''}`}
+            title={meetingMode ? 'End meeting mode' : 'Start meeting mode'}
+            onClick={onMeetingToggle}
+          >
+            <Radio size={18} />
+          </button>
+        </div>
+
+        {/* Wake word hint text */}
+        {wakeWordActive && micState === 'sleeping' && wakeWordName && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--text2)', textAlign: 'center', marginTop: 4 }}>
+            Say &ldquo;{wakeWordName}&rdquo; to wake me
+          </p>
+        )}
       </div>
     </>
   )
