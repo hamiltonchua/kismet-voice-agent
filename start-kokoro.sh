@@ -1,16 +1,26 @@
 #!/bin/bash
 # Start Kismet Voice Agent with Kokoro TTS (CPU-only, GPU-friendly)
 
-# Activate conda environment
-eval "$(conda shell.bash hook)"
+# Load .env if present
+SCRIPT_DIR_EARLY="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR_EARLY/.env" ]; then
+    set -a
+    source "$SCRIPT_DIR_EARLY/.env"
+    set +a
+fi
+
+# Activate conda environment (use full path so this works without conda in PATH)
+CONDA_BASE=/opt/homebrew/anaconda3
+eval "$($CONDA_BASE/bin/conda shell.bash hook)"
 conda activate voice-agent
 
 # Isolate from ~/.local site-packages (numpy conflicts)
 export PYTHONNOUSERSITE=1
 
-# Set TTS engine
+# Set TTS engine (Kokoro via MLX on Apple Silicon)
 export TTS_ENGINE=kokoro
 export KOKORO_VOICE=af_sky
+export MLX_TTS_MODEL=mlx-community/Kokoro-82M-bf16
 
 # Feature flags (set to "false" to disable)
 export WAKE_WORD_ENABLED=${WAKE_WORD_ENABLED:-true}

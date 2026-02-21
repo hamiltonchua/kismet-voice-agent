@@ -28,5 +28,5 @@ export const ENROLL_PROMPTS = [
   "Stars cannot shine without darkness.",
 ]
 
-export const ENROLL_MIN = 3
-export const ENROLL_MAX = 20
+export const ENROLL_MIN = 5
+export const ENROLL_MAX = 5

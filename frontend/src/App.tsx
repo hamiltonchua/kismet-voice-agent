@@ -49,6 +49,7 @@ export default function App() {
   const [enrolled, setEnrolled] = useState(false)
   const [verifyEnabled, setVerifyEnabled] = useState(false)
   const [lastVerifyScore, setLastVerifyScore] = useState<number | null>(null)
+  const lastVerifyScoreRef = useRef<number | null>(null)
   const [showEnrollModal, setShowEnrollModal] = useState(false)
   const [enrollStep, setEnrollStep] = useState(0)
 
@@ -349,9 +350,11 @@ export default function App() {
     } else if (type === 'transcript') {
       const metaParts: string[] = []
       if (msg.time) metaParts.push(`${msg.time}s`)
-      if (msg.role === 'user' && lastVerifyScore !== null) {
-        const badge = lastVerifyScore >= 0.50 ? '✓' : '✗'
-        metaParts.push(`speaker ${badge} ${lastVerifyScore.toFixed(2)}`)
+      if (msg.role === 'user' && lastVerifyScoreRef.current !== null) {
+        const score = lastVerifyScoreRef.current
+        const badge = score >= 0.50 ? '✓' : '✗'
+        metaParts.push(`speaker ${badge} ${score.toFixed(2)}`)
+        lastVerifyScoreRef.current = null
       }
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(),
@@ -427,9 +430,11 @@ export default function App() {
 
     } else if (type === 'verified') {
       setLastVerifyScore(msg.score as number)
+      lastVerifyScoreRef.current = msg.score as number
 
     } else if (type === 'rejected') {
       setLastVerifyScore(msg.score as number)
+      lastVerifyScoreRef.current = msg.score as number
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(),
         role: 'user',

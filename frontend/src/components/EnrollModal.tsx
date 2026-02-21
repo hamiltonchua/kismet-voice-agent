@@ -1,6 +1,6 @@
 // frontend/src/components/EnrollModal.tsx
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { ENROLL_PROMPTS, ENROLL_MIN, ENROLL_MAX, SAMPLE_RATE } from '../constants'
+import { ENROLL_PROMPTS, ENROLL_MAX, SAMPLE_RATE } from '../constants'
 import { float32ToBase64 } from '../hooks/useManualRecording'
 
 interface EnrollModalProps {
@@ -69,25 +69,18 @@ export function EnrollModal({ show, step, onCancel, send }: EnrollModalProps) {
     }
   }, [show, step, send])
 
-  const handleFinish = useCallback(() => {
-    send({ type: 'enroll_complete' })
-  }, [send])
-
   if (!show) return null
 
   const isDone = step >= ENROLL_MAX
-  const canFinish = step >= ENROLL_MIN && !isDone
   const currentPrompt = isDone ? 'Processing enrollment...' : ENROLL_PROMPTS[step % ENROLL_PROMPTS.length]
-  const infoText = isDone ? '' : step < ENROLL_MIN
-    ? `Sample ${step + 1} of ${ENROLL_MIN} required (up to ${ENROLL_MAX})`
-    : `Sample ${step + 1} of ${ENROLL_MAX} — ${step} recorded, you can finish or keep going`
+  const infoText = isDone ? '' : `Sample ${step + 1} of ${ENROLL_MAX}`
 
   return (
     <div className="modal-overlay show">
       <div className="modal">
         <h2 id="enrollTitle">{isDone ? '✅ Enrolled!' : 'Voice Enrollment'}</h2>
         <p>Read each sentence aloud to enroll your voice. This lets Kismet verify it&apos;s you speaking.</p>
-        <p style={{ fontSize: '0.8rem', opacity: 0.7 }}>Minimum {ENROLL_MIN} samples, up to {ENROLL_MAX} for better accuracy.</p>
+        <p style={{ fontSize: '0.8rem', opacity: 0.7 }}>{ENROLL_MAX} voice samples required.</p>
         <div className="prompt-text">&quot;{currentPrompt}&quot;</div>
         <div className="progress">
           {Array.from({ length: Math.min(step + 1, ENROLL_MAX) }, (_, i) => (
@@ -109,11 +102,6 @@ export function EnrollModal({ show, step, onCancel, send }: EnrollModalProps) {
               onTouchEnd={(e) => { e.preventDefault(); stopRecording() }}
             >
               {btnText}
-            </button>
-          )}
-          {canFinish && (
-            <button className="modal-btn" onClick={handleFinish}>
-              ✅ Done ({step} samples)
             </button>
           )}
           <button className="modal-btn secondary" onClick={onCancel}>
