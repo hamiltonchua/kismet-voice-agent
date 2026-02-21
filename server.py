@@ -23,6 +23,7 @@ import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from platform_config import (
     PLATFORM, STT_BACKEND, TTS_BACKEND,
@@ -308,10 +309,11 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event) -> AsyncItera
                     "x-openclaw-agent-id": OPENCLAW_AGENT,
                 },
                 json={
-                    "model": "openclaw",
+                    "model": "anthropic/claude-sonnet-4-6",
                     "messages": messages,
                     "user": "voice-chat",
                     "stream": True,
+                    "thinking": {"type": "disabled"},
                 },
                 timeout=120.0,
             ) as response:
@@ -534,10 +536,50 @@ async def shutdown_event():
         wake_word_model = None
 
 
+# Serve React build output (frontend/dist/)
+_DIST_DIR = Path(__file__).parent / "frontend" / "dist"
+_DIST_INDEX = _DIST_DIR / "index.html"
+_FALLBACK_HTML = Path(__file__).parent / "index.html"
+
+from fastapi.responses import FileResponse
+
+# Serve /assets/ files — check dist/assets first, then fall back to dist root
+# (onnxruntime-web requests .wasm/.mjs files relative to the JS bundle in /assets/)
+@app.get("/assets/{filename:path}")
+async def serve_assets(filename: str):
+    # Try dist/assets first
+    fpath = _DIST_DIR / "assets" / filename
+    if fpath.exists() and fpath.is_file():
+        return FileResponse(str(fpath))
+    # Fall back to dist root (for wasm/onnx files copied by vite-plugin-static-copy)
+    fpath = _DIST_DIR / filename
+    if fpath.exists() and fpath.is_file():
+        return FileResponse(str(fpath))
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"error": "not found"}, status_code=404)
+
 @app.get("/")
 async def index():
-    html_path = Path(__file__).parent / "index.html"
-    return HTMLResponse(html_path.read_text())
+    if _DIST_INDEX.exists():
+        return HTMLResponse(_DIST_INDEX.read_text())
+    return HTMLResponse(_FALLBACK_HTML.read_text())
+
+@app.get("/{filename:path}")
+async def serve_static(filename: str):
+    """Serve static files from frontend/dist/ (e.g. .onnx, .wasm, .svg)"""
+    if filename:
+        # Try exact path first (e.g. /assets/foo.js → dist/assets/foo.js)
+        fpath = _DIST_DIR / filename
+        if fpath.exists() and fpath.is_file():
+            return FileResponse(str(fpath))
+        # Fallback: strip /assets/ prefix and check dist root
+        # (onnxruntime-web requests wasm files relative to the JS bundle in /assets/)
+        if filename.startswith("assets/"):
+            fpath = _DIST_DIR / filename.removeprefix("assets/")
+            if fpath.exists() and fpath.is_file():
+                return FileResponse(str(fpath))
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 @app.websocket("/ws")
@@ -609,11 +651,9 @@ async def websocket_endpoint(ws: WebSocket):
                     if score < speaker_verify.DEFAULT_THRESHOLD:
                         print(f"[Speaker] Rejected: score={score:.3f} ({sv_time:.2f}s)")
                         await ws.send_json({"type": "rejected", "score": round(float(score), 3), "time": round(sv_time, 2)})
-                        # If wake word mode, go back to sleep
-                        if WAKE_WORD_ENABLED and client_state == "awake":
-                            client_state = "sleeping"
-                            print("[State] Rejected speaker, going back to sleep")
-                            await ws.send_json({"type": "sleep"})
+                        # Stay awake so user can retry without wake word
+                        # Reset idle timer instead of going back to sleep
+                        last_activity = time.time()
                         return
                     print(f"[Speaker] Verified: score={score:.3f} ({sv_time:.2f}s)")
                     # Pass score along for UI display
