@@ -10,13 +10,25 @@ Built by [Kismet Labs](https://kismetlabs.com), an AI consulting firm in the Phi
 Browser (mic) → WebSocket → Server
                               ├─ Wake Word: Porcupine (CPU, "Hey Friday")
                               ├─ Speaker Verification: SpeechBrain ECAPA-TDNN (CPU)
-                              ├─ STT: faster-whisper large-v3 (GPU)
+                              ├─ STT: MLX Whisper (macOS) / faster-whisper (CUDA)
                               ├─ LLM: OpenClaw /v1/chat/completions → your agent
-                              └─ TTS: Chatterbox Turbo (GPU)
+                              └─ TTS: MLX Kokoro/Chatterbox (macOS) / Chatterbox (CUDA) / Kokoro ONNX (CPU)
                             ← audio response
 ```
 
 Everything except the LLM runs locally on your machine. No cloud STT/TTS APIs, no extra costs.
+
+## Multi-Platform Support
+
+The server auto-detects your hardware and selects the right backends:
+
+| Platform | STT | TTS | Notes |
+|---|---|---|---|
+| **macOS Apple Silicon** | MLX Whisper (large-v3-turbo) | MLX Kokoro / Chatterbox | Metal acceleration, no CUDA needed |
+| **Linux + NVIDIA GPU** | faster-whisper (large-v3) | Chatterbox Turbo | CUDA, 6GB+ VRAM recommended |
+| **CPU-only** | faster-whisper (CPU mode) | Kokoro ONNX | Slower, but works anywhere |
+
+Override auto-detection with `KISMET_PLATFORM=mlx|cuda|cpu` or set `STT_BACKEND` / `TTS_BACKEND` directly.
 
 ## Features
 
@@ -29,35 +41,35 @@ Everything except the LLM runs locally on your machine. No cloud STT/TTS APIs, n
 - **Auto-Reconnection** — WebSocket reconnects with exponential backoff
 - **Audio Level Visualizer** — mic input levels shown on the mic button
 - **Settings Drawer** — configure speaker verification and voice enrollment in-app
+- **Speaker score display** — verification score shown on each user message
 - **Local processing** — STT, TTS, wake word, and speaker verify all run locally
 
 ## Requirements
 
-- **GPU:** NVIDIA with 6GB+ VRAM (tested on RTX 3060 12GB)
-- **Python 3.11** (required for Chatterbox TTS)
+### macOS (Apple Silicon)
+
+- **Apple Silicon Mac** (M1/M2/M3/M4)
+- **Python 3.11+**
+- **conda** (recommended for environment management)
+- **Picovoice Porcupine access key** (free tier at [picovoice.ai](https://picovoice.ai))
 - **Node.js 18+** (for frontend development)
 - **OpenClaw** with chat completions endpoint enabled
+
+### Linux (NVIDIA GPU)
+
+- **NVIDIA GPU** with 6GB+ VRAM (tested on RTX 3060 12GB)
+- **Python 3.11** (required for Chatterbox TTS)
 - **CUDA** toolkit installed
-- **conda** (recommended for environment management)
-- **Picovoice Porcupine access key** (free tier available at [picovoice.ai](https://picovoice.ai))
+- **conda** (recommended)
+- **Picovoice Porcupine access key**
+- **Node.js 18+**
+- **OpenClaw** with chat completions endpoint enabled
 
 ### Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
-
-### Optional: Kokoro TTS (lighter alternative)
-
-If you prefer Kokoro over Chatterbox (less VRAM, no voice cloning):
-
-```bash
-pip install kokoro-onnx
-curl -L -o kokoro-v1.0.onnx https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
-curl -L -o voices-v1.0.bin https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
-```
-
-Set `TTS_ENGINE=kokoro` when running.
 
 ## OpenClaw Setup
 
@@ -87,38 +99,62 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -node
 
 Copy `.env.example` to `.env` and fill in your values:
 
+### Core
+
 | Variable | Default | Description |
 |---|---|---|
-| `TTS_ENGINE` | `chatterbox` | TTS engine (`chatterbox` or `kokoro`) |
-| `CHATTERBOX_REF` | — | Reference audio for voice cloning |
-| `WHISPER_MODEL` | `large-v3` | Whisper model size |
-| `WHISPER_DEVICE` | `cuda` | Device for STT (`cuda`, `cpu`) |
-| `KOKORO_VOICE` | `af_heart` | Kokoro voice ID (when using Kokoro) |
-| `WAKE_WORD_ENABLED` | `true` | Enable wake word detection |
-| `WAKE_WORD` | `hey_friday` | Wake word (must match your `.ppn` model) |
-| `PORCUPINE_ACCESS_KEY` | — | Picovoice Porcupine access key (required) |
-| `PORCUPINE_MODEL_PATH` | — | Path to custom `.ppn` wake word file |
-| `WAKE_WORD_THRESHOLD` | `0.5` | Wake word detection sensitivity |
-| `SPEAKER_VERIFY` | `auto` | Speaker verification (`auto`, `true`, `false`) |
-| `SPEAKER_VERIFY_THRESHOLD` | `0.65` | Cosine similarity threshold |
-| `IDLE_TIMEOUT_SEC` | `30` | Seconds before returning to sleep |
+| `KISMET_PLATFORM` | *(auto-detect)* | Force platform: `mlx`, `cuda`, or `cpu` |
 | `OPENCLAW_URL` | `http://127.0.0.1:18789/v1/chat/completions` | OpenClaw endpoint |
 | `OPENCLAW_TOKEN` | — | Gateway auth token |
 | `OPENCLAW_AGENT` | `main` | Agent ID to route to |
 | `SYSTEM_PROMPT` | *(built-in)* | System prompt for voice responses |
 
+### STT
+
+| Variable | Default | Description |
+|---|---|---|
+| `STT_BACKEND` | *(auto)* | `mlx-audio` (macOS) or `faster-whisper` (CUDA/CPU) |
+| `MLX_STT_MODEL` | `mlx-community/whisper-large-v3-turbo-asr-fp16` | MLX Whisper model |
+| `WHISPER_MODEL` | `large-v3` | faster-whisper model size |
+| `WHISPER_DEVICE` | `cuda` | Device for faster-whisper (`cuda`, `cpu`) |
+
+### TTS
+
+| Variable | Default | Description |
+|---|---|---|
+| `TTS_BACKEND` | *(auto)* | `mlx-audio`, `chatterbox-cuda`, or `kokoro-onnx` |
+| `TTS_ENGINE` | `chatterbox` | Legacy: `chatterbox` or `kokoro` |
+| `MLX_TTS_MODEL` | `mlx-community/chatterbox-fp16` | MLX TTS model |
+| `MLX_TTS_MODEL_FALLBACK` | `mlx-community/Kokoro-82M-bf16` | Fallback MLX TTS model |
+| `MLX_TTS_VOICE` | `af_sky` | Voice ID for MLX Kokoro |
+| `CHATTERBOX_REF` | — | Reference audio for voice cloning |
+| `KOKORO_VOICE` | `af_heart` | Kokoro ONNX voice ID |
+
+### Wake Word & Speaker Verification
+
+| Variable | Default | Description |
+|---|---|---|
+| `WAKE_WORD_ENABLED` | `true` | Enable wake word detection |
+| `WAKE_WORD` | `hey_friday` | Wake word name |
+| `PORCUPINE_ACCESS_KEY` | — | Picovoice access key (required) |
+| `PORCUPINE_MODEL_PATH` | — | Path to custom `.ppn` wake word file |
+| `WAKE_WORD_THRESHOLD` | `0.5` | Wake word detection sensitivity |
+| `SPEAKER_VERIFY` | `auto` | Speaker verification (`auto`, `true`, `false`) |
+| `SPEAKER_VERIFY_THRESHOLD` | `0.65` | Cosine similarity threshold |
+| `IDLE_TIMEOUT_SEC` | `30` | Seconds before returning to sleep |
+
 ## Usage
 
-### Quick Start (with Chatterbox TTS)
-
-```bash
-./start-chatterbox.sh
-```
-
-### Quick Start (with Kokoro TTS)
+### Quick Start (macOS — Kokoro TTS)
 
 ```bash
 ./start-kokoro.sh
+```
+
+### Quick Start (Linux — Chatterbox TTS)
+
+```bash
+./start-chatterbox.sh
 ```
 
 Open `https://<your-host>:8765` in your browser. Accept the self-signed cert warning.
@@ -129,17 +165,18 @@ Open `https://<your-host>:8765` in your browser. Accept the self-signed cert war
 - **Mic button** — hold to talk (manual mode), glows green to show audio levels
 - **Spacebar** — hold to talk (when VAD is off)
 - **Talk while Kismet speaks** — interrupts and listens to you
+- **Trash icon** — clear conversation and reset context
 - **Settings (⚙️)** — open the settings drawer to manage speaker verification and enrollment
 
 ### Speaker Enrollment
 
 1. Click the **⚙️ settings icon** in the header to open the settings drawer
 2. Click **Enroll Voice**
-3. Record 3 guided sentences (hold to record each one)
+3. Record 5 guided sentences (hold to record each one)
 4. Your voice embedding is saved to `~/.kismet/voices/`
 5. Kismet will now only respond to your voice
 
-You can toggle speaker verification on/off from the settings drawer at any time.
+You can toggle speaker verification on/off from the settings drawer at any time. Each user message shows the verification score (e.g., `speaker ✓ 0.78`).
 
 ## Frontend
 
@@ -164,7 +201,7 @@ frontend/
 ├── src/
 │   ├── App.tsx              # Root component + state machine
 │   ├── types.ts             # Shared TypeScript types
-│   ├── constants.ts         # Enrollment constants (min/max samples)
+│   ├── constants.ts         # Enrollment constants
 │   ├── hooks/
 │   │   ├── useWebSocket.ts  # WebSocket connection + reconnect logic
 │   │   ├── useAudio.ts      # Audio playback queue
@@ -196,7 +233,7 @@ npm run lint       # ESLint
 
 The production build outputs directly to the root of the project so `server.py` can serve it.
 
-## VRAM Usage
+## VRAM Usage (Linux/CUDA)
 
 | Component | VRAM |
 |---|---|
@@ -204,13 +241,11 @@ The production build outputs directly to the root of the project so `server.py` 
 | Chatterbox Turbo | ~2 GB |
 | **Total** | **~5 GB** |
 
-Wake word (Porcupine) and speaker verification (SpeechBrain) run on CPU.
+On macOS, MLX models use unified memory — no dedicated VRAM needed.
 
-Use `TTS_ENGINE=kokoro` (~300MB) or `WHISPER_MODEL=medium` (~1.5GB) to reduce VRAM.
+Wake word (Porcupine) and speaker verification (SpeechBrain) run on CPU on all platforms.
 
 ## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for the full development plan:
 
 - [x] **Phase 1:** Streaming TTS
 - [x] **Phase 2:** Voice Activity Detection (VAD)
@@ -219,8 +254,10 @@ See [ROADMAP.md](ROADMAP.md) for the full development plan:
 - [x] **Phase 5:** Speaker verification (SpeechBrain ECAPA-TDNN)
 - [x] **Phase 6:** Wake word + speaker verification combined
 - [x] **Phase 7:** Polish & hardening (reconnection, toasts, audio visualizer)
-- [x] **Phase 8:** Meeting companion (passive transcription, diarization basics)
-- [ ] **Phase 9:** UI overhaul (settings drawer, mobile layout, visual polish) ← *in progress*
+- [x] **Phase 9:** UI overhaul — React 19 + shadcn/ui rewrite, settings drawer, speaker score display
+- [ ] **Phase 10:** Tool call visibility — show active/completed tool calls in the UI
+- [ ] **Phase 11:** Token-aware context management — replace naive sliding window with token counting and compaction
+- [ ] **Phase 8:** Meeting companion — passive transcription with diarization, wake word commands *(parked)*
 
 ## License
 
