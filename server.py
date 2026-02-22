@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import time
 import wave
@@ -88,6 +89,16 @@ MEETING_SYSTEM_PROMPT = os.getenv("MEETING_SYSTEM_PROMPT", (
     "STRICT RULES: No emoji. No emoticons. No markdown. No bullet lists. No code blocks. No asterisks. "
     "Keep responses concise and conversational. Plain spoken English only."
 ))
+
+CANVAS_INSTRUCTION = (
+    "\n\nYou can emit visual content for a canvas display panel. "
+    "Wrap visual content in <canvas> tags. Two types:\n"
+    '- <canvas type="html" title="Title">...full HTML...</canvas> for rich content (charts, tables, styled output). '
+    "Include Chart.js from https://cdn.jsdelivr.net/npm/chart.js if needed for charts.\n"
+    '- <canvas type="text" title="Title">...plain text...</canvas> for simple text summaries.\n'
+    "Canvas content is displayed visually, NOT spoken aloud. Continue speaking normally outside canvas blocks. "
+    "Use canvas when data benefits from visual presentation (comparisons, lists, code, charts)."
+)
 
 # ---------------------------------------------------------------------------
 # Global singletons
@@ -274,8 +285,73 @@ def detect_wake_word(audio_chunk: np.ndarray) -> tuple[bool, float]:
 # Sentence boundary pattern: ends with .!? followed by space or end
 SENTENCE_END_RE = re.compile(r'[.!?](?:\s|$)')
 
+# Canvas block extraction
+CANVAS_BLOCK_RE = re.compile(r'<canvas\s+type="(\w+)"(?:\s+title="([^"]*)")?\s*>(.*?)</canvas>', re.DOTALL)
 
-async def chat_stream(user_text: str, cancel_event: asyncio.Event) -> AsyncIterator[tuple[str, str]]:
+
+def extract_canvas_blocks(text: str) -> tuple[str, list[dict]]:
+    """Extract <canvas> blocks from text. Returns (cleaned_text, blocks)."""
+    blocks = []
+    for m in CANVAS_BLOCK_RE.finditer(text):
+        blocks.append({
+            "type": m.group(1),
+            "title": m.group(2) or "",
+            "content": m.group(3).strip(),
+        })
+    cleaned = CANVAS_BLOCK_RE.sub("", text).strip()
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned, blocks
+
+
+async def push_canvas(blocks: list[dict], loop):
+    """Push canvas blocks to macOS a2ui canvas via openclaw CLI."""
+    for block in blocks:
+        try:
+            if block["type"] == "text":
+                content = block["content"]
+                if block["title"]:
+                    content = f"{block['title']}\n\n{content}"
+                await loop.run_in_executor(None, lambda c=content: subprocess.run(
+                    ["openclaw", "nodes", "canvas", "a2ui", "push", "--node", "prodigy", "--text", c],
+                    timeout=10,
+                ))
+                print(f"[Canvas] Pushed text: {block['title'] or '(untitled)'}")
+            elif block["type"] == "html":
+                title = block["title"] or "Canvas"
+                html_content = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>{title}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #1a1a2e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; padding: 24px; line-height: 1.6; }}
+  h1, h2, h3 {{ color: #ffffff; margin-bottom: 12px; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+  th, td {{ border: 1px solid #333; padding: 10px 14px; text-align: left; }}
+  th {{ background: #16213e; color: #00d97e; }}
+  tr:nth-child(even) {{ background: rgba(255,255,255,0.03); }}
+  code, pre {{ background: #0f0f0f; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
+  pre {{ padding: 16px; overflow-x: auto; margin: 12px 0; }}
+  canvas {{ max-width: 100%; }}
+</style>
+</head><body>
+<h2>{title}</h2>
+{block['content']}
+</body></html>"""
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, dir='/tmp', prefix='canvas_') as f:
+                    f.write(html_content)
+                    tmp_path = f.name
+                await loop.run_in_executor(None, lambda p=tmp_path: subprocess.run(
+                    ["openclaw", "nodes", "canvas", "navigate", "--node", "prodigy", "--url", f"file://{p}"],
+                    timeout=10,
+                ))
+                print(f"[Canvas] Pushed HTML to {tmp_path}")
+        except Exception as e:
+            print(f"[Canvas] Push error: {e}")
+
+
+async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt: str | None = None) -> AsyncIterator[tuple[str, str]]:
     """
     Stream chat response from OpenClaw.
     Yields tuples of (event_type, data):
@@ -293,7 +369,7 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event) -> AsyncItera
     if len(conversation_history) > 40:
         conversation_history = conversation_history[-40:]
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+    messages = [{"role": "system", "content": system_prompt or SYSTEM_PROMPT}] + conversation_history
 
     full_text = ""
     buffer = ""
@@ -644,6 +720,9 @@ async def websocket_endpoint(ws: WebSocket):
     enrollment_samples = []
     enrolling = False
 
+    # Canvas state (per-connection)
+    canvas_enabled = False
+
     async def process_audio(audio_bytes: bytes):
         nonlocal cancel_event, last_activity, client_state
         cancel_event.clear()
@@ -752,7 +831,8 @@ async def websocket_endpoint(ws: WebSocket):
         total_tts_time = 0
         llm_error = False
 
-        async for event_type, data in chat_stream(user_text, cancel_event):
+        effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION if canvas_enabled else SYSTEM_PROMPT
+        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
                 continue
 
@@ -768,6 +848,10 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Check cancellation before TTS
                 if cancel_event.is_set():
+                    continue
+
+                # Skip TTS for sentences containing canvas markup
+                if canvas_enabled and ('<canvas' in data or '</canvas>' in data):
                     continue
 
                 await ws.send_json({"type": "status", "text": "Speaking..."})
@@ -804,6 +888,16 @@ async def websocket_endpoint(ws: WebSocket):
                 return
 
             elif event_type == "done":
+                # Extract and push canvas blocks if enabled
+                if canvas_enabled and '<canvas' in data:
+                    cleaned_text, canvas_blocks = extract_canvas_blocks(data)
+                    if conversation_history and conversation_history[-1]["role"] == "assistant":
+                        conversation_history[-1]["content"] = cleaned_text
+                    if canvas_blocks:
+                        asyncio.create_task(push_canvas(canvas_blocks, loop))
+                        await ws.send_json({"type": "canvas_pushed", "count": len(canvas_blocks)})
+                    data = cleaned_text
+
                 llm_time = time.time() - llm_start
                 last_activity = time.time()
                 await ws.send_json({
@@ -1068,6 +1162,11 @@ async def websocket_endpoint(ws: WebSocket):
                 global SPEAKER_VERIFY
                 SPEAKER_VERIFY = "true" if msg.get("enabled") else "false"
                 await ws.send_json({"type": "verify_toggled", "enabled": msg.get("enabled", False)})
+
+            elif msg["type"] == "canvas_toggle":
+                canvas_enabled = msg.get("enabled", False)
+                print(f"[Canvas] {'Enabled' if canvas_enabled else 'Disabled'}")
+                await ws.send_json({"type": "canvas_toggled", "enabled": canvas_enabled})
 
             elif msg["type"] == "meeting_start":
                 # Start meeting companion mode

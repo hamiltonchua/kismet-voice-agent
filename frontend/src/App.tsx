@@ -53,6 +53,9 @@ export default function App() {
   const [showEnrollModal, setShowEnrollModal] = useState(false)
   const [enrollStep, setEnrollStep] = useState(0)
 
+  // ---- Canvas mode ----
+  const [canvasEnabled, setCanvasEnabled] = useState(() => localStorage.getItem('canvas_enabled') === 'true')
+
   // ---- Meeting mode ----
   const [meetingMode, setMeetingMode] = useState(false)
   const meetingModeRef = useRef(false)
@@ -327,6 +330,10 @@ export default function App() {
         updateStatusForMode()
       }
       sendRef.current({ type: 'check_enrollment' })
+      // Restore canvas state from localStorage
+      if (localStorage.getItem('canvas_enabled') === 'true') {
+        sendRef.current({ type: 'canvas_toggle', enabled: true })
+      }
 
     } else if (type === 'error') {
       toast.error(msg.text as string)
@@ -484,6 +491,12 @@ export default function App() {
 
     } else if (type === 'verify_toggled') {
       setVerifyEnabled(msg.enabled as boolean)
+
+    } else if (type === 'canvas_toggled') {
+      setCanvasEnabled(msg.enabled as boolean)
+
+    } else if (type === 'canvas_pushed') {
+      // Canvas content was pushed to a2ui — no action needed
     }
   }, [
     enableWakeWordMode, updateStatusForMode, handleMeetingWake, handleWake, handleSleep,
@@ -605,6 +618,13 @@ export default function App() {
     send({ type: 'toggle_verify', enabled: next })
   }, [verifyEnabled, send])
 
+  const handleCanvasToggle = useCallback(() => {
+    const next = !canvasEnabled
+    setCanvasEnabled(next)
+    localStorage.setItem('canvas_enabled', String(next))
+    send({ type: 'canvas_toggle', enabled: next })
+  }, [canvasEnabled, send])
+
   // Derive connection dot state from existing state
   const connectionDot: 'connected' | 'disconnected' | 'sleeping' | 'connecting' = showReconnectBanner
     ? 'disconnected'
@@ -634,6 +654,7 @@ export default function App() {
         meetingMode={meetingMode}
         enrolled={enrolled}
         verifyEnabled={verifyEnabled}
+        canvasEnabled={canvasEnabled}
         onEnroll={handleEnrollStart}
         onVerifyToggle={handleVerifyToggle}
         onMeetingToggle={() => meetingMode ? exitMeetingMode() : enterMeetingMode()}
@@ -666,6 +687,11 @@ export default function App() {
             <h1 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: 10 }}>Kismet</h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className={`conn-dot ${connectionDot}`} />
+              {canvasEnabled && (
+                <span style={{ fontSize: '0.6rem', background: 'var(--purple)', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                  CANVAS
+                </span>
+              )}
               <span
                 className={`status-${statusClass || 'default'}`}
                 style={{ fontSize: '0.82rem', transition: 'color 0.2s' }}
@@ -704,8 +730,10 @@ export default function App() {
             <SettingsDrawer
               enrolled={enrolled}
               verifyEnabled={verifyEnabled}
+              canvasEnabled={canvasEnabled}
               onEnroll={handleEnrollStart}
               onVerifyToggle={handleVerifyToggle}
+              onCanvasToggle={handleCanvasToggle}
             />
           </div>
         </div>
