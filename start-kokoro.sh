@@ -19,7 +19,8 @@ export PYTHONNOUSERSITE=1
 
 # Set TTS engine (Kokoro via MLX on Apple Silicon)
 export TTS_ENGINE=kokoro
-export KOKORO_VOICE=af_sky
+export KOKORO_VOICE=af_kore
+export MLX_TTS_VOICE=af_kore
 export MLX_TTS_MODEL=mlx-community/Kokoro-82M-bf16
 
 # Feature flags (set to "false" to disable)
