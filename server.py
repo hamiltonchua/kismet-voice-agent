@@ -969,7 +969,11 @@ async def websocket_endpoint(ws: WebSocket):
         total_tts_time = 0
         llm_error = False
 
-        effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION if canvas_enabled else SYSTEM_PROMPT
+        # If SYSTEM_PROMPT was overridden via env (already contains canvas instructions), skip appending CANVAS_INSTRUCTION
+        if canvas_enabled and not os.getenv("SYSTEM_PROMPT"):
+            effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION
+        else:
+            effective_prompt = SYSTEM_PROMPT
         in_canvas_block = False  # Track if we're inside a <canvas> block
         canvas_token_buf = ""    # Buffer tokens while inside canvas block
 
