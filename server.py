@@ -79,7 +79,9 @@ SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
     "You are Kismet, a voice assistant. Your response will be spoken aloud via TTS. "
     "STRICT RULES: No emoji. No emoticons. No markdown. No bullet lists. No code blocks. No asterisks. No special characters. "
     "Keep responses concise and conversational. Just plain spoken English, like you're talking to someone. "
-    "Be natural, warm, and to the point."
+    "Be natural, warm, and to the point. "
+    "You have a voice agent canvas at /canvas for visual output. There is also a separate 'prodigy node canvas' "
+    "managed by Friday. If the user asks to open or show something on the prodigy canvas, tell them to ask Friday."
 ))
 
 MEETING_SYSTEM_PROMPT = os.getenv("MEETING_SYSTEM_PROMPT", (
@@ -309,16 +311,19 @@ def transcribe(audio_bytes: bytes, apply_denoise: bool = False) -> str:
             wf.writeframes(audio_bytes)
 
     try:
+        stt_start = time.time()
         if STT_BACKEND == "mlx-audio":
             result = model.generate(tmp_path)
             text = (result.text or "").strip()
             lang = getattr(result, "language", "?") or "?"
-            print(f"[STT] MLX ({lang}) → \"{text}\"")
+            stt_ms = int((time.time() - stt_start) * 1000)
+            print(f"[STT] MLX ({lang}) → \"{text}\" ({stt_ms}ms)")
             return text
         else:
             segments, info = model.transcribe(tmp_path, language=None, vad_filter=True, beam_size=5)
             text = " ".join(seg.text.strip() for seg in segments).strip()
-            print(f"[STT] ({info.language}, {info.duration:.1f}s) → \"{text}\"")
+            stt_ms = int((time.time() - stt_start) * 1000)
+            print(f"[STT] ({info.language}, {info.duration:.1f}s) → \"{text}\" ({stt_ms}ms)")
             return text
     finally:
         os.unlink(tmp_path)
@@ -470,6 +475,9 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
                         token = delta.get("content", "")
 
                         if token:
+                            if not got_first_token:
+                                ttft_ms = int((time.time() - request_start) * 1000)
+                                print(f"[LLM] TTFT: {ttft_ms}ms")
                             got_first_token = True
                             full_text += token
                             buffer += token
@@ -507,7 +515,8 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
 
         # Record full response
         conversation_history.append({"role": "assistant", "content": full_text})
-        print(f"[LLM] → \"{full_text[:80]}...\"" if len(full_text) > 80 else f"[LLM] → \"{full_text}\"")
+        llm_total_ms = int((time.time() - request_start) * 1000)
+        print(f"[LLM] → \"{full_text[:80]}...\" ({llm_total_ms}ms)" if len(full_text) > 80 else f"[LLM] → \"{full_text}\" ({llm_total_ms}ms)")
         yield ("done", full_text)
 
 
