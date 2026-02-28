@@ -118,9 +118,11 @@ speaker_enrolled_embedding = None  # Cached enrollment embedding
 tts_model = None
 tts_sample_rate = None
 wake_word_model = None
+deepfilter_model = None  # DeepFilterNet model + state
 conversation_history = []
 _model_lock = threading.Lock()  # Prevent concurrent MLX/GPU model loads
 _models_ready = False  # True once startup preload completes
+_deepfilter_available = True  # Set to False if import fails
 
 
 def get_whisper():
@@ -228,11 +230,73 @@ def _load_enrolled_embedding():
     return speaker_enrolled_embedding
 
 
+def get_deepfilter():
+    """Lazy-load DeepFilterNet model."""
+    global deepfilter_model, _deepfilter_available
+    if not _deepfilter_available:
+        return None
+    with _model_lock:
+        if deepfilter_model is None:
+            try:
+                from df.enhance import init_df
+                print("[Denoise] Loading DeepFilterNet model...")
+                model, df_state, _ = init_df()
+                deepfilter_model = (model, df_state)
+                print("[Denoise] DeepFilterNet ready.")
+            except Exception as e:
+                print(f"[Denoise] WARNING: Failed to load DeepFilterNet: {e}")
+                _deepfilter_available = False
+                return None
+    return deepfilter_model
+
+
+def denoise(audio_bytes: bytes) -> bytes:
+    """Apply DeepFilterNet noise suppression to raw PCM bytes (16-bit 16kHz mono)."""
+    df = get_deepfilter()
+    if df is None:
+        return audio_bytes
+
+    t0 = time.time()
+    model, df_state = df
+
+    from df.enhance import enhance
+    from scipy.signal import resample_poly
+
+    # PCM 16-bit → float32
+    pcm = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+    # Resample 16kHz → 48kHz (DeepFilterNet native rate)
+    audio_48k = resample_poly(pcm, up=3, down=1).astype(np.float32)
+
+    # DeepFilterNet expects torch tensor [1, samples]
+    import torch
+    tensor_48k = torch.from_numpy(audio_48k).unsqueeze(0)
+    enhanced = enhance(model, df_state, tensor_48k)
+
+    # enhanced is a numpy array or tensor — ensure numpy
+    if isinstance(enhanced, torch.Tensor):
+        enhanced = enhanced.numpy()
+    enhanced = enhanced.squeeze()
+
+    # Resample 48kHz → 16kHz
+    audio_16k = resample_poly(enhanced, up=1, down=3).astype(np.float32)
+
+    # Float32 → PCM 16-bit
+    audio_16k = np.clip(audio_16k, -1.0, 1.0)
+    result = (audio_16k * 32767).astype(np.int16).tobytes()
+
+    duration_ms = int((time.time() - t0) * 1000)
+    print(f'[Denoise] Noise suppression applied ({duration_ms}ms)')
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Pipeline functions
 # ---------------------------------------------------------------------------
-def transcribe(audio_bytes: bytes) -> str:
+def transcribe(audio_bytes: bytes, apply_denoise: bool = False) -> str:
     """Convert raw PCM 16-bit 16kHz mono audio to text."""
+    if apply_denoise:
+        audio_bytes = denoise(audio_bytes)
     model = get_whisper()
 
     # Write to temp WAV file (needed by both backends)
@@ -754,6 +818,7 @@ async def websocket_endpoint(ws: WebSocket):
         "wake_word_enabled": WAKE_WORD_ENABLED,
         "wake_word": WAKE_WORD_KEYWORD if WAKE_WORD_ENABLED else None,
         "idle_timeout": IDLE_TIMEOUT_SEC,
+        "noise_suppression": False,
     })
 
     # Client state: sleeping (wake word mode) or awake (VAD mode)
@@ -793,6 +858,9 @@ async def websocket_endpoint(ws: WebSocket):
     # Canvas state (per-connection)
     canvas_enabled = False
 
+    # Noise suppression state (per-connection)
+    noise_suppression_enabled = False
+
     async def process_audio(audio_bytes: bytes):
         nonlocal cancel_event, last_activity, client_state
         cancel_event.clear()
@@ -826,7 +894,7 @@ async def websocket_endpoint(ws: WebSocket):
         await ws.send_json({"type": "status", "text": "Transcribing..."})
         t0 = time.time()
         try:
-            user_text = await loop.run_in_executor(None, transcribe, audio_bytes)
+            user_text = await loop.run_in_executor(None, lambda: transcribe(audio_bytes, apply_denoise=noise_suppression_enabled))
         except Exception as e:
             print(f"[STT] Error: {e}")
             await ws.send_json({"type": "error", "text": "Couldn't understand that, try again"})
@@ -1019,7 +1087,7 @@ async def websocket_endpoint(ws: WebSocket):
 
         # 2. Transcribe
         try:
-            text = await loop.run_in_executor(None, transcribe, audio_bytes)
+            text = await loop.run_in_executor(None, lambda: transcribe(audio_bytes, apply_denoise=noise_suppression_enabled))
         except Exception as e:
             print(f"[Meeting] STT error: {e}")
             return
@@ -1053,7 +1121,7 @@ async def websocket_endpoint(ws: WebSocket):
         # 2. Transcribe the command
         await ws.send_json({"type": "status", "text": "Transcribing command..."})
         try:
-            user_text = await loop.run_in_executor(None, transcribe, audio_bytes)
+            user_text = await loop.run_in_executor(None, lambda: transcribe(audio_bytes, apply_denoise=noise_suppression_enabled))
         except Exception as e:
             await ws.send_json({"type": "error", "text": "Couldn't understand that"})
             return
@@ -1255,6 +1323,11 @@ async def websocket_endpoint(ws: WebSocket):
                 canvas_enabled = msg.get("enabled", False)
                 print(f"[Canvas] {'Enabled' if canvas_enabled else 'Disabled'}")
                 await ws.send_json({"type": "canvas_toggled", "enabled": canvas_enabled})
+
+            elif msg["type"] == "noise_suppression_toggle":
+                noise_suppression_enabled = msg.get("enabled", False)
+                print(f"[Denoise] {'Enabled' if noise_suppression_enabled else 'Disabled'}")
+                await ws.send_json({"type": "noise_suppression_toggled", "enabled": noise_suppression_enabled})
 
             elif msg["type"] == "meeting_start":
                 # Start meeting companion mode

@@ -56,6 +56,9 @@ export default function App() {
   // ---- Canvas mode ----
   const [canvasEnabled, setCanvasEnabled] = useState(() => localStorage.getItem('canvas_enabled') === 'true')
 
+  // ---- Noise suppression ----
+  const [noiseSuppressionEnabled, setNoiseSuppressionEnabled] = useState(() => localStorage.getItem('noise_suppression_enabled') === 'true')
+
   // ---- Meeting mode ----
   const [meetingMode, setMeetingMode] = useState(false)
   const meetingModeRef = useRef(false)
@@ -334,6 +337,10 @@ export default function App() {
       if (localStorage.getItem('canvas_enabled') === 'true') {
         sendRef.current({ type: 'canvas_toggle', enabled: true })
       }
+      // Restore noise suppression state from localStorage
+      if (localStorage.getItem('noise_suppression_enabled') === 'true') {
+        sendRef.current({ type: 'noise_suppression_toggle', enabled: true })
+      }
 
     } else if (type === 'error') {
       toast.error(msg.text as string)
@@ -495,6 +502,9 @@ export default function App() {
     } else if (type === 'canvas_toggled') {
       setCanvasEnabled(msg.enabled as boolean)
 
+    } else if (type === 'noise_suppression_toggled') {
+      setNoiseSuppressionEnabled(msg.enabled as boolean)
+
     } else if (type === 'canvas_pushed') {
       // Canvas content was pushed to a2ui — no action needed
     }
@@ -625,6 +635,13 @@ export default function App() {
     send({ type: 'canvas_toggle', enabled: next })
   }, [canvasEnabled, send])
 
+  const handleNoiseSuppressionToggle = useCallback(() => {
+    const next = !noiseSuppressionEnabled
+    setNoiseSuppressionEnabled(next)
+    localStorage.setItem('noise_suppression_enabled', String(next))
+    send({ type: 'noise_suppression_toggle', enabled: next })
+  }, [noiseSuppressionEnabled, send])
+
   // Derive connection dot state from existing state
   const connectionDot: 'connected' | 'disconnected' | 'sleeping' | 'connecting' = showReconnectBanner
     ? 'disconnected'
@@ -655,6 +672,7 @@ export default function App() {
         enrolled={enrolled}
         verifyEnabled={verifyEnabled}
         canvasEnabled={canvasEnabled}
+        noiseSuppressionEnabled={noiseSuppressionEnabled}
         onEnroll={handleEnrollStart}
         onVerifyToggle={handleVerifyToggle}
         onMeetingToggle={() => meetingMode ? exitMeetingMode() : enterMeetingMode()}
@@ -690,6 +708,11 @@ export default function App() {
               {canvasEnabled && (
                 <span style={{ fontSize: '0.6rem', background: 'var(--purple)', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
                   CANVAS
+                </span>
+              )}
+              {noiseSuppressionEnabled && (
+                <span style={{ fontSize: '0.6rem', background: '#0ea5e9', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+                  NS
                 </span>
               )}
               <span
@@ -731,9 +754,11 @@ export default function App() {
               enrolled={enrolled}
               verifyEnabled={verifyEnabled}
               canvasEnabled={canvasEnabled}
+              noiseSuppressionEnabled={noiseSuppressionEnabled}
               onEnroll={handleEnrollStart}
               onVerifyToggle={handleVerifyToggle}
               onCanvasToggle={handleCanvasToggle}
+              onNoiseSuppressionToggle={handleNoiseSuppressionToggle}
             />
           </div>
         </div>
