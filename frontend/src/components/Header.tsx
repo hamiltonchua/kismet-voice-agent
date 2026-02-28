@@ -9,12 +9,13 @@ interface HeaderProps {
   enrolled: boolean
   verifyEnabled: boolean
   canvasEnabled: boolean
+  noiseSuppressionEnabled: boolean
   onEnroll: () => void
   onVerifyToggle: () => void
   onMeetingToggle: () => void
 }
 
-export function Header({ statusText, statusClass, connectionDot, meetingMode, enrolled, verifyEnabled, canvasEnabled, onEnroll, onVerifyToggle, onMeetingToggle }: HeaderProps) {
+export function Header({ statusText, statusClass, connectionDot, meetingMode, enrolled, verifyEnabled, canvasEnabled, noiseSuppressionEnabled, onEnroll, onVerifyToggle, onMeetingToggle }: HeaderProps) {
   // Mobile-only top bar — hidden on desktop (md+)
   return (
     <header
@@ -31,6 +32,11 @@ export function Header({ statusText, statusClass, connectionDot, meetingMode, en
         {canvasEnabled && (
           <span style={{ fontSize: '0.6rem', background: 'var(--purple)', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
             CANVAS
+          </span>
+        )}
+        {noiseSuppressionEnabled && (
+          <span style={{ fontSize: '0.6rem', background: '#0ea5e9', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
+            NS
           </span>
         )}
         <span

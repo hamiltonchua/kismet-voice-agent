@@ -9,3 +9,6 @@ speechbrain>=1.0.0
 
 # Wake word detection (Phase 4)
 openwakeword
+
+# Noise suppression (Phase 12)
+deepfilternet
