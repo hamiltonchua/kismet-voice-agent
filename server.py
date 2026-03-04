@@ -414,13 +414,15 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
     """
     global conversation_history
 
+    # Prepend /think:off directive to disable extended thinking (reduces latency for voice)
+    prefixed_text = f"/think:off {user_text}"
     conversation_history.append({"role": "user", "content": user_text})
 
     # Keep last 40 messages
     if len(conversation_history) > 40:
         conversation_history = conversation_history[-40:]
 
-    messages = [{"role": "system", "content": system_prompt or SYSTEM_PROMPT}] + conversation_history
+    messages = [{"role": "system", "content": system_prompt or SYSTEM_PROMPT}] + conversation_history[:-1] + [{"role": "user", "content": prefixed_text}]
 
     full_text = ""
     buffer = ""
