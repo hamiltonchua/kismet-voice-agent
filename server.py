@@ -1097,6 +1097,112 @@ async def websocket_endpoint(ws: WebSocket):
                     "sentences": sentence_count,
                 })
 
+    async def process_text(user_text: str):
+        """Process a text message — skip STT, go straight to LLM + TTS."""
+        nonlocal cancel_event, last_activity
+        cancel_event.clear()
+        last_activity = time.time()
+
+        await ws.send_json({"type": "transcript", "role": "user", "text": user_text})
+
+        if cancel_event.is_set():
+            return
+
+        # LLM streaming + TTS per sentence (same as process_audio)
+        await ws.send_json({"type": "status", "text": "Thinking..."})
+        await ws.send_json({"type": "stream_start"})
+
+        llm_start = time.time()
+        first_sentence_time = None
+        sentence_count = 0
+        total_tts_time = 0
+
+        if canvas_enabled and not os.getenv("SYSTEM_PROMPT"):
+            effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION
+        else:
+            effective_prompt = SYSTEM_PROMPT
+        in_canvas_block = False
+        canvas_token_buf = ""
+
+        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt):
+            if cancel_event.is_set() and event_type not in ("cancelled", "done"):
+                continue
+
+            if event_type == "working":
+                await ws.send_json({"type": "working"})
+
+            elif event_type == "token":
+                if canvas_enabled:
+                    canvas_token_buf += data
+                    if not in_canvas_block and '<canvas' in canvas_token_buf:
+                        in_canvas_block = True
+                    if in_canvas_block and '</canvas>' in canvas_token_buf:
+                        in_canvas_block = False
+                        canvas_token_buf = ""
+                        continue
+                    if in_canvas_block:
+                        continue
+                    canvas_token_buf = ""
+                await ws.send_json({"type": "token", "text": data})
+
+            elif event_type == "sentence":
+                if first_sentence_time is None:
+                    first_sentence_time = time.time() - llm_start
+                if cancel_event.is_set():
+                    continue
+                if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
+                    continue
+                await ws.send_json({"type": "status", "text": "Speaking..."})
+                try:
+                    tts_start = time.time()
+                    audio_out, sr = await loop.run_in_executor(None, synthesize, data)
+                    tts_time = time.time() - tts_start
+                    total_tts_time += tts_time
+                    if cancel_event.is_set():
+                        continue
+                    audio_b64 = base64.b64encode(audio_out).decode()
+                    await ws.send_json({
+                        "type": "audio_chunk",
+                        "data": audio_b64,
+                        "sentence": data,
+                        "index": sentence_count,
+                    })
+                    sentence_count += 1
+                except Exception as e:
+                    print(f"[TTS] Error: {e}")
+                    await ws.send_json({"type": "error", "text": "Audio generation failed — see text response above"})
+
+            elif event_type == "cancelled":
+                if not data:
+                    await ws.send_json({"type": "error", "text": "Something went wrong, try again"})
+                print(f"[WS] Response cancelled")
+                await ws.send_json({"type": "cancelled"})
+                return
+
+            elif event_type == "done":
+                if canvas_enabled and '<canvas' in data:
+                    cleaned_text, canvas_blocks = extract_canvas_blocks(data)
+                    if conversation_history and conversation_history[-1]["role"] == "assistant":
+                        conversation_history[-1]["content"] = cleaned_text
+                    if canvas_blocks:
+                        asyncio.create_task(push_canvas(canvas_blocks, loop))
+                        await ws.send_json({"type": "canvas_pushed", "count": len(canvas_blocks)})
+                    data = cleaned_text
+
+                llm_time = time.time() - llm_start
+                last_activity = time.time()
+                await ws.send_json({
+                    "type": "stream_end",
+                    "text": data,
+                    "times": {
+                        "stt": 0,
+                        "llm": round(llm_time, 2),
+                        "tts": round(total_tts_time, 2),
+                        "first_sentence": round(first_sentence_time, 2) if first_sentence_time else None,
+                    },
+                    "sentences": sentence_count,
+                })
+
     async def process_meeting_audio(audio_bytes: bytes):
         """Process audio in meeting mode: transcribe + identify speaker, no LLM."""
         nonlocal meeting_session, last_activity
@@ -1401,6 +1507,16 @@ async def websocket_endpoint(ws: WebSocket):
                             processing_task.cancel()
                     audio_bytes = base64.b64decode(msg["data"])
                     processing_task = asyncio.create_task(process_meeting_command(audio_bytes))
+
+            elif msg["type"] == "text_message":
+                # Text chat — skip STT, go straight to LLM
+                if processing_task and not processing_task.done():
+                    cancel_event.set()
+                    try:
+                        await asyncio.wait_for(processing_task, timeout=2.0)
+                    except asyncio.TimeoutError:
+                        processing_task.cancel()
+                processing_task = asyncio.create_task(process_text(msg["text"]))
 
             elif msg["type"] == "clear":
                 cancel_event.set()

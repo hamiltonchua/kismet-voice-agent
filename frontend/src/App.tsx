@@ -16,6 +16,7 @@ import { EnrollModal } from './components/EnrollModal'
 import { ReconnectBanner } from './components/ReconnectBanner'
 import { MeetingBanner } from './components/MeetingBanner'
 import { SettingsDrawer } from './components/SettingsDrawer'
+import { ChatInput } from './components/ChatInput'
 
 export default function App() {
   // ---- Connection state ----
@@ -571,6 +572,17 @@ export default function App() {
     send({ type: 'clear' })
   }, [stopPlayback, send])
 
+  // ---- Text message ----
+  const sendTextMessage = useCallback((text: string) => {
+    if (isSpeakingRef.current || isProcessingRef.current) {
+      interrupt()
+    }
+    setIsProcessing(true)
+    isProcessingRef.current = true
+    setStatus('Processing...', 'active')
+    send({ type: 'text_message', text })
+  }, [interrupt, isSpeakingRef, setStatus, send])
+
   // ---- Manual mic button ----
   const handleMicDown = useCallback(async (e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault()
@@ -590,8 +602,12 @@ export default function App() {
 
   // ---- Spacebar support ----
   useEffect(() => {
+    const isTyping = () => {
+      const tag = document.activeElement?.tagName
+      return tag === 'TEXTAREA' || tag === 'INPUT' || (document.activeElement as HTMLElement)?.isContentEditable
+    }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat && !isRecording()) {
+      if (e.code === 'Space' && !e.repeat && !isRecording() && !isTyping()) {
         e.preventDefault()
         handleMicDown(e as unknown as React.MouseEvent)
       }
@@ -771,6 +787,7 @@ export default function App() {
             meetingEntries={meetingEntries}
             meetingMode={meetingMode}
           />
+          <ChatInput onSend={sendTextMessage} disabled={_isProcessing} />
         </div>
       </div>
 
@@ -785,6 +802,7 @@ export default function App() {
           meetingEntries={meetingEntries}
           meetingMode={meetingMode}
         />
+        <ChatInput onSend={sendTextMessage} disabled={_isProcessing} />
         {/* Mobile bottom dock */}
         <div className="mobile-dock">
           <Controls
