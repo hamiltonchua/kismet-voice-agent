@@ -41,7 +41,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 ---
 
 ## Phase 3: Interruption Support (v0.4) ✅
-*If you talk while Kismet is speaking, it stops and listens.*
+*If you talk while the agent is speaking, it stops and listens.*
 
 - [x] Track playback state on the client (playing / idle)
 - [x] Keep VAD active during TTS playback
@@ -58,17 +58,16 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 ---
 
 ## Phase 4: Wake Word (v0.5) ✅
-*Only activate after hearing "Hey Kismet." Low power idle state.*
+*Only activate after hearing "Hey Friday." Low power idle state.*
 
-- [x] OpenWakeWord engine (Python, CPU, TFLite)
-- [x] Server-side detection — client streams audio chunks, server runs wake word on CPU
+- [x] Server-side wake word detection — client streams audio chunks, server detects
 - [x] State machine: `sleeping → wake_word_detected → listening → processing → speaking → sleeping`
 - [x] Visual UI states (sleeping indicator, active when awake)
 - [x] Configurable timeout: return to sleep after N seconds of no interaction
-- [x] Model: `hey_jarvis`, threshold: 0.5
+- [x] Initially OpenWakeWord (TFLite), later replaced with Picovoice Porcupine
+- [x] Custom wake word model: `hey-friday_en_mac_v4_0_0.ppn`
 
 **Completed:** 2026-02-08
-**Branch:** `feat/wake-word`
 **Depends on:** Phase 3 (interruption)
 
 ---
@@ -77,19 +76,18 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 *Only respond to recognized voices. Reject strangers.*
 
 - [x] SpeechBrain ECAPA-TDNN speaker verification module (`speaker_verify.py`)
-  - Runs on CPU to keep GPU free for whisper + chatterbox
+  - Runs on CPU to keep GPU free for whisper + TTS
   - Embedding extraction, cosine similarity comparison
-  - Enrollment: average multiple samples → save to `voices/ham_embedding.npy`
+  - Enrollment: average multiple samples → save to `voices/`
   - Verification: compare incoming audio against enrolled embedding
 - [x] Enrollment flow via WebSocket (enroll_start → enroll_sample × N → enroll_complete)
 - [x] Runtime verification gate in `process_audio()` — reject unrecognized speakers before STT
-- [x] UI: Enrollment modal with guided prompts (3 sentences)
+- [x] UI: Enrollment modal with guided prompts
 - [x] UI: Verification toggle, status badges, similarity scores
 - [x] Configurable threshold via `SPEAKER_VERIFY_THRESHOLD` env var (default 0.65)
 - [x] `SPEAKER_VERIFY` env var: "auto" (verify if enrolled), "true", "false"
 
 **Completed:** 2026-02-08
-**Branch:** `feat/speaker-verification`
 **Depends on:** Phase 3 (interruption)
 
 ---
@@ -99,8 +97,7 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 
 - [x] Integrate wake word (Phase 4) with speaker verification (Phase 5)
 - [x] Flow: wake_word → record speech → verify speaker → if verified, transcribe + respond
-- [x] On rejected speaker: return to sleep state (server + client)
-- [ ] Reject unrecognized speakers with audio feedback ("I don't recognize your voice")
+- [x] On rejected speaker: subtle rejection beep + stay awake
 - [x] Configurable: wake word only, verification only, or both (via env vars)
 
 **Completed:** 2026-02-08
@@ -108,44 +105,130 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 
 ---
 
-## Phase 7: Polish & Hardening (v1.0)
+## Phase 7: Polish & Hardening (v1.0) ✅
 *Production-quality touches.*
 
 - [x] Reconnection handling (exponential backoff, state restoration)
 - [x] Graceful error messages (toast notifications for all pipeline failures)
 - [x] Audio level visualizer (green glow ring on mic button)
-- [ ] Settings panel (voice selection, wake word toggle, VAD sensitivity)
-- [ ] Mobile-friendly layout
-- [ ] Conversation export (save transcript)
-- [ ] Startup as a systemd service (optional)
-- [ ] Performance profiling (GPU memory, latency benchmarks)
-- [ ] Multi-speaker enrollment (recognize different users)
-- [ ] Voice profile management UI
+- [x] Multi-platform support (macOS Apple Silicon / Linux CUDA / CPU-only)
+- [x] Auto-detect platform and select STT/TTS backends
+- [x] Dual-environment enrollment (works across platforms)
+- [x] `.env` support for secrets and configuration
+- [x] Porcupine wake word (replaced OpenWakeWord for reliability)
+- [x] VAD echo cancellation + sensitivity tuning
+- [x] Preload models at startup with threading lock for MLX safety
 
-**Estimated effort:** 1-2 days
-**Branch:** various `feat/*` and `fix/*`
+**Completed:** 2026-02-14
 
 ---
 
-## Architecture After All Phases
+## Phase 9: UI Overhaul ✅
+*Complete frontend rewrite with modern React stack.*
+
+- [x] React 19 + TypeScript + Vite scaffold
+- [x] Tailwind CSS v4 + shadcn/ui (new-york dark theme)
+- [x] Two-panel layout: left Control Center, right Conversation
+- [x] Custom hooks: useWebSocket, useAudio, useVAD, useWakeWordStream, useManualRecording, useAudioLevel
+- [x] Settings drawer (shadcn Sheet) for speaker verification and enrollment
+- [x] Enrollment modal with guided 5-sample flow
+- [x] Speaker score display on each user message
+- [x] Meeting companion mode toggle + banner
+- [x] Wake word support in meeting mode
+- [x] Lucide React icons throughout
+
+**Completed:** 2026-02-21
+**Branch:** `phase9-ui-overhaul` (merged via PR #1)
+
+---
+
+## Phase 10: Canvas Display + Tool Activity ✅
+*Visual output companion page and tool status indicator.*
+
+- [x] Standalone `/canvas` page with WebSocket connection (`/ws/canvas`)
+- [x] LLM emits `<canvas type="html">` or `<canvas type="text">` blocks
+- [x] Backend extracts canvas blocks, suppresses from TTS and chat display
+- [x] Canvas supports Chart.js, tables, styled content, inline scripts
+- [x] Tool-working indicator ("Using tools...") in frontend
+- [x] Stronger LLM instructions for canvas content generation
+
+**Completed:** 2026-02-21
+**Branch:** `phase10-canvas`
+
+---
+
+## Phase 12: Noise Suppression ✅
+*Clean up audio input with real-time noise suppression.*
+
+- [x] DeepFilterNet integration for noise suppression
+- [x] UI toggle to enable/disable noise suppression
+- [x] Runs on audio stream before STT processing
+
+**Completed:** 2026-02-28
+**Branch:** `phase12-noise-suppression`
+
+---
+
+## Phase 13: Pipeline Observability & Configuration ✅
+*Timing, model selection, and system prompt customization.*
+
+- [x] Pipeline timing metrics (STT duration, LLM TTFT, LLM total, TTS duration)
+- [x] Configurable LLM model via `OPENCLAW_MODEL` env var
+- [x] Custom system prompt (rename to Friday, canvas instructions)
+- [x] Kokoro voice switched to `af_kore`
+- [x] Restart script (`restart.sh`)
+
+**Completed:** 2026-03-02
+
+---
+
+## Phase 14: WebAuthn Authentication ✅
+*Secure access with passkeys / Touch ID. Multi-device support.*
+
+- [x] WebAuthn (Touch ID / passkey) authentication for the web UI
+- [x] Device registration page (requires existing auth)
+- [x] QR code invite flow for multi-device passkey enrollment
+- [x] Disabled extended thinking for voice requests (latency optimization)
+
+**Completed:** 2026-03-04
+**Branch:** `phase14-webauthn`
+
+---
+
+## Architecture
 
 ```
 [Browser]
   │
-  ├─ Wake word detection (idle, low power)
   ├─ VAD (speech start/end detection)
   ├─ Audio capture + streaming
   ├─ Audio playback (chunked, interruptible)
   │
-  └─── WebSocket ───→ [Server on discovery:8765]
+  └─── WebSocket ───→ [Server on :8765]
                          │
-                         ├─ Speaker Verification (CPU) — ECAPA-TDNN
-                         ├─ faster-whisper (GPU) — STT
-                         ├─ OpenClaw API — LLM
-                         └─ Chatterbox Turbo (GPU) — TTS
+                         ├─ Wake Word: Porcupine (CPU, "Hey Friday")
+                         ├─ Noise Suppression: DeepFilterNet
+                         ├─ Speaker Verification: SpeechBrain ECAPA-TDNN (CPU)
+                         ├─ STT: MLX Whisper (macOS) / faster-whisper (CUDA/CPU)
+                         ├─ LLM: OpenClaw /v1/chat/completions → your agent
+                         ├─ TTS: MLX Kokoro/Chatterbox (macOS) / Chatterbox (CUDA) / Kokoro ONNX (CPU)
+                         ├─ Canvas: /ws/canvas WebSocket → visual display
+                         └─ Auth: WebAuthn / passkey (Touch ID)
+                       ← audio response + canvas content
 ```
 
-## Phase 8: Meeting Companion
+---
+
+## Future
+
+### Phase 11: Token-Aware Context Management *(planned)*
+*Replace naive sliding window with token counting and compaction.*
+
+- [ ] Token counting for conversation history
+- [ ] Smart compaction (summarize older messages)
+- [ ] Context window budget management
+
+### Phase 8: Meeting Companion *(parked)*
 *Passive transcription with diarization. Only responds to Ham's voice on command.*
 
 - [ ] Passive transcription mode (always listening, transcribing in background)
@@ -154,14 +237,22 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 - [ ] Meeting notes / transcript export
 - [ ] Multi-speaker labeling
 
-**Estimated effort:** 2-3 days
 **Depends on:** Phase 5 (speaker verification)
+
+### Phase 7 Remaining Items *(backlog)*
+
+- [ ] Mobile-friendly layout
+- [ ] Conversation export (save transcript)
+- [ ] Performance profiling (GPU memory, latency benchmarks)
+- [ ] Multi-speaker enrollment (recognize different users)
+- [ ] Voice profile management UI
 
 ---
 
 ## Notes
 - Each phase is a separate git branch, merged to main when stable
 - Phases are incremental — each one works standalone on top of the previous
-- GPU VRAM budget: ~4GB used (whisper 3GB + chatterbox), ~8GB headroom
+- Phase 8 was parked in favor of UI and infrastructure work (phases 9-14)
+- Phase 11 and 13 were renumbered as priorities shifted
 - Wake word + speaker verification run on CPU to avoid competing with STT/TTS for GPU
 - Speaker verification adds ~50-100ms latency per request (CPU embedding extraction)

@@ -37,15 +37,19 @@ Override auto-detection with `KISMET_PLATFORM=mlx|cuda|cpu` or set `STT_BACKEND`
 - **Speaker Verification** — only responds to enrolled voices (SpeechBrain ECAPA-TDNN)
 - **Streaming TTS** — responses spoken sentence-by-sentence as they arrive
 - **Voice Activity Detection (VAD)** — hands-free, no button required
-- **Interruption support** — talk over Kismet and it stops to listen
+- **Interruption support** — talk over the agent and it stops to listen
 - **Voice Cloning** — Chatterbox TTS supports cloning from a reference audio file
+- **Noise Suppression** — DeepFilterNet cleans up audio input in real time (toggleable)
+- **WebAuthn / Touch ID** — passkey authentication with multi-device enrollment via QR invite
 - **Auto-Reconnection** — WebSocket reconnects with exponential backoff
 - **Audio Level Visualizer** — mic input levels shown on the mic button
 - **Settings Drawer** — configure speaker verification and voice enrollment in-app
 - **Speaker score display** — verification score shown on each user message
 - **Canvas Display** — visual output (charts, tables, code) pushed to a companion canvas page
 - **Tool Activity Indicator** — shows "Using tools..." when the LLM is running tools
-- **Local processing** — STT, TTS, wake word, and speaker verify all run locally
+- **Pipeline Timing** — STT, LLM TTFT, LLM total, and TTS latency metrics
+- **Configurable LLM model** — set model via `OPENCLAW_MODEL` env var
+- **Local processing** — STT, TTS, wake word, noise suppression, and speaker verify all run locally
 
 ## Requirements
 
@@ -145,6 +149,20 @@ Copy `.env.example` to `.env` and fill in your values:
 | `SPEAKER_VERIFY` | `auto` | Speaker verification (`auto`, `true`, `false`) |
 | `SPEAKER_VERIFY_THRESHOLD` | `0.65` | Cosine similarity threshold |
 | `IDLE_TIMEOUT_SEC` | `30` | Seconds before returning to sleep |
+
+### LLM
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCLAW_MODEL` | *(agent default)* | Override LLM model for voice requests |
+
+### Authentication
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBAUTHN_RP_ID` | `localhost` | WebAuthn relying party ID (your domain) |
+| `WEBAUTHN_RP_NAME` | `Kismet Voice` | Display name for passkey prompts |
+| `WEBAUTHN_ORIGIN` | `https://localhost:8765` | Expected WebAuthn origin |
 
 ## Usage
 
@@ -275,11 +293,16 @@ Wake word (Porcupine) and speaker verification (SpeechBrain) run on CPU on all p
 - [x] **Phase 4:** Wake word ("Hey Friday" via Porcupine)
 - [x] **Phase 5:** Speaker verification (SpeechBrain ECAPA-TDNN)
 - [x] **Phase 6:** Wake word + speaker verification combined
-- [x] **Phase 7:** Polish & hardening (reconnection, toasts, audio visualizer)
-- [x] **Phase 9:** UI overhaul — React 19 + shadcn/ui rewrite, settings drawer, speaker score display
-- [x] **Phase 10:** Canvas display + tool activity — standalone canvas page via WebSocket, tool-working indicator, canvas token/TTS suppression
-- [ ] **Phase 11:** Token-aware context management — replace naive sliding window with token counting and compaction
-- [ ] **Phase 8:** Meeting companion — passive transcription with diarization, wake word commands *(parked)*
+- [x] **Phase 7:** Polish & hardening — reconnection, multi-platform, audio visualizer
+- [x] **Phase 9:** UI overhaul — React 19 + shadcn/ui rewrite, two-panel layout, settings drawer
+- [x] **Phase 10:** Canvas display + tool activity — standalone canvas page, tool-working indicator
+- [x] **Phase 12:** Noise suppression — DeepFilterNet with UI toggle
+- [x] **Phase 13:** Pipeline observability — timing metrics, configurable model, restart script
+- [x] **Phase 14:** WebAuthn authentication — Touch ID / passkey, multi-device QR invite
+- [ ] **Phase 11:** Token-aware context management — replace sliding window with token counting and compaction *(planned)*
+- [ ] **Phase 8:** Meeting companion — passive transcription with diarization *(parked)*
+
+See [ROADMAP.md](ROADMAP.md) for full details on each phase.
 
 ## License
 
