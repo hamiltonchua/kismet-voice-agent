@@ -19,6 +19,8 @@ Browser (mic) → WebSocket → Server
 
 Everything except the LLM runs locally on your machine. No cloud STT/TTS APIs, no extra costs.
 
+**Context management** is handled entirely by OpenClaw server-side. The voice agent sends only the system prompt and latest user message per request — OpenClaw's session transcript and [LCM (Lossless Context Management)](https://docs.openclaw.ai) handle conversation history, compaction, and memory automatically.
+
 ## Multi-Platform Support
 
 The server auto-detects your hardware and selects the right backends:
@@ -299,7 +301,9 @@ Wake word (Porcupine) and speaker verification (SpeechBrain) run on CPU on all p
 - [x] **Phase 12:** Noise suppression — DeepFilterNet with UI toggle
 - [x] **Phase 13:** Pipeline observability — timing metrics, configurable model, restart script
 - [x] **Phase 14:** WebAuthn authentication — Touch ID / passkey, multi-device QR invite
-- [x] ~~**Phase 11:** Token-aware context management~~ — eliminated; OpenClaw session + LCM handles context server-side (2026-03-13)
+- [x] **Text chat input** — type messages when voice isn't practical
+- [x] **Context delegation** — removed client-side 40-message window; OpenClaw session + LCM manages context server-side
+- ~~Phase 11 (token-aware context management)~~ — eliminated, superseded by context delegation
 - [ ] **Phase 8:** Meeting companion — passive transcription with diarization *(parked)*
 - [ ] **Phase 15:** Quality of life — mobile layout, conversation export, multi-speaker enrollment, performance profiling *(backlog)*
 

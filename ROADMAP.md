@@ -217,6 +217,17 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
                        ← audio response + canvas content
 ```
 
+### Context Management
+
+The voice agent sends **only the system prompt + latest user message** per request. Conversation context (history, compaction, memory) is managed entirely by OpenClaw server-side.
+
+- Each request hits `/v1/chat/completions` with `"user": "voice-chat"`, which creates a **stable persistent session** on the OpenClaw side
+- OpenClaw's session transcript accumulates the full conversation history
+- **LCM (Lossless Context Management)** automatically compacts older messages when the context window fills up, summarizing them into persistent compaction entries instead of dropping them
+- The voice agent maintains a local `conversation_history` list purely for the **UI transcript display** — it is not sent to the LLM
+
+This replaced the original 40-message sliding window approach (removed 2026-03-13), which was sending redundant duplicate context on every request.
+
 ---
 
 ## Text Chat Input ✅
@@ -230,10 +241,21 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 
 ---
 
-## Future
+## Context Delegation to OpenClaw ✅
+*Remove client-side context window; let OpenClaw manage conversation memory.*
 
-### ~~Phase 11: Token-Aware Context Management~~ *(eliminated)*
-*No longer needed — OpenClaw's session + LCM compaction handles context management server-side. The 40-message sliding window was removed (2026-03-13); the voice agent now sends only the latest message per request.*
+- [x] Removed 40-message sliding window from `chat_stream()`
+- [x] Voice agent now sends only `[system_prompt, latest_user_message]` per request
+- [x] OpenClaw session (keyed by `"user": "voice-chat"`) manages full conversation transcript
+- [x] LCM compaction handles context window limits automatically (summarize, not drop)
+- [x] `conversation_history` retained as local display log for UI only
+- [x] Phase 11 (token-aware context management) eliminated — no longer needed
+
+**Completed:** 2026-03-13
+
+---
+
+## Future
 
 ### Phase 8: Meeting Companion *(parked)*
 *Passive transcription with diarization. Only responds to Ham's voice on command.*
@@ -261,6 +283,8 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 - Each phase is a separate git branch, merged to main when stable
 - Phases are incremental — each one works standalone on top of the previous
 - Phase 8 was parked in favor of UI and infrastructure work (phases 9-14)
-- Phase 11 and 13 were renumbered as priorities shifted
+- Phase 11 was eliminated (2026-03-13) — context management delegated to OpenClaw's session + LCM
+- Phase 13 was renumbered from original plan as priorities shifted
 - Wake word + speaker verification run on CPU to avoid competing with STT/TTS for GPU
 - Speaker verification adds ~50-100ms latency per request (CPU embedding extraction)
+- Voice agent sends only the latest message per request; OpenClaw manages full conversation context server-side
