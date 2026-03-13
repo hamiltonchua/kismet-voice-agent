@@ -48,6 +48,7 @@ Override auto-detection with `KISMET_PLATFORM=mlx|cuda|cpu` or set `STT_BACKEND`
 - **Settings Drawer** — configure speaker verification and voice enrollment in-app
 - **Speaker score display** — verification score shown on each user message
 - **Canvas Display** — visual output (charts, tables, code) pushed to a companion canvas page
+- **TTS Skip When Voice Disabled** — toggling voice off skips TTS synthesis server-side (saves CPU/GPU) and suppresses audio playback on the client
 - **Tool Activity Indicator** — shows "Using tools..." when the LLM is running tools
 - **Pipeline Timing** — STT, LLM TTFT, LLM total, and TTS latency metrics
 - **Configurable LLM model** — set model via `OPENCLAW_MODEL` env var

@@ -348,6 +348,10 @@ export default function App() {
       if (localStorage.getItem('noise_suppression_enabled') === 'true') {
         sendRef.current({ type: 'noise_suppression_toggle', enabled: true })
       }
+      // Sync voice/TTS state with server
+      if (localStorage.getItem('voice_enabled') === 'false') {
+        sendRef.current({ type: 'voice_toggle', enabled: false })
+      }
 
     } else if (type === 'error') {
       toast.error(msg.text as string)
@@ -406,7 +410,7 @@ export default function App() {
       ))
 
     } else if (type === 'audio_chunk') {
-      enqueueAudio(msg.data as string)
+      if (voiceEnabledRef.current) enqueueAudio(msg.data as string)
 
     } else if (type === 'stream_end') {
       const t = msg.times as TimingInfo
@@ -446,7 +450,7 @@ export default function App() {
       updateStatusForMode()
 
     } else if (type === 'audio') {
-      playAudio(msg.data as string)
+      if (voiceEnabledRef.current) playAudio(msg.data as string)
       const t = msg.times as TimingInfo
       setStatus(`STT ${t.stt}s · LLM ${t.llm}s · TTS ${t.tts}s`, 'active')
       setIsProcessing(false)
@@ -587,7 +591,7 @@ export default function App() {
     setIsProcessing(true)
     isProcessingRef.current = true
     setStatus('Processing...', 'active')
-    send({ type: 'text_message', text })
+    send({ type: 'text_message', text, skip_tts: !voiceEnabledRef.current })
   }, [interrupt, isSpeakingRef, setStatus, send])
 
   // ---- Manual mic button ----
@@ -671,6 +675,7 @@ export default function App() {
     setVoiceEnabled(next)
     voiceEnabledRef.current = next
     localStorage.setItem('voice_enabled', String(next))
+    send({ type: 'voice_toggle', enabled: next })
 
     if (!next) {
       // Turning voice off — stop all audio input

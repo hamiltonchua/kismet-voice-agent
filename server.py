@@ -886,8 +886,11 @@ async def websocket_endpoint(ws: WebSocket):
     # Noise suppression state (per-connection)
     noise_suppression_enabled = False
 
+    # TTS skip state (per-connection) — when voice is disabled on client
+    skip_tts = False
+
     async def process_audio(audio_bytes: bytes):
-        nonlocal cancel_event, last_activity, client_state
+        nonlocal cancel_event, last_activity, client_state, skip_tts
         cancel_event.clear()
         last_activity = time.time()
 
@@ -1039,6 +1042,10 @@ async def websocket_endpoint(ws: WebSocket):
                 if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
                     continue
 
+                if skip_tts:
+                    sentence_count += 1
+                    continue
+
                 await ws.send_json({"type": "status", "text": "Speaking..."})
                 try:
                     tts_start = time.time()
@@ -1099,8 +1106,8 @@ async def websocket_endpoint(ws: WebSocket):
                 })
 
     async def process_text(user_text: str):
-        """Process a text message — skip STT, go straight to LLM + TTS."""
-        nonlocal cancel_event, last_activity
+        """Process a text message — skip STT, go straight to LLM + TTS (unless skip_tts)."""
+        nonlocal cancel_event, last_activity, skip_tts
         cancel_event.clear()
         last_activity = time.time()
 
@@ -1152,6 +1159,9 @@ async def websocket_endpoint(ws: WebSocket):
                 if cancel_event.is_set():
                     continue
                 if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
+                    continue
+                if skip_tts:
+                    sentence_count += 1
                     continue
                 await ws.send_json({"type": "status", "text": "Speaking..."})
                 try:
@@ -1466,6 +1476,10 @@ async def websocket_endpoint(ws: WebSocket):
                 print(f"[Denoise] {'Enabled' if noise_suppression_enabled else 'Disabled'}")
                 await ws.send_json({"type": "noise_suppression_toggled", "enabled": noise_suppression_enabled})
 
+            elif msg["type"] == "voice_toggle":
+                skip_tts = not msg.get("enabled", True)
+                print(f"[TTS] {'Skipping' if skip_tts else 'Enabled'}")
+
             elif msg["type"] == "meeting_start":
                 # Start meeting companion mode
                 enrolled = speaker_enrolled_embedding if speaker_enrolled_embedding is not None else _load_enrolled_embedding()
@@ -1512,6 +1526,9 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg["type"] == "text_message":
                 # Text chat — skip STT, go straight to LLM
+                # Per-message skip_tts flag overrides connection state
+                if msg.get("skip_tts") is not None:
+                    skip_tts = msg["skip_tts"]
                 if processing_task and not processing_task.done():
                     cancel_event.set()
                     try:

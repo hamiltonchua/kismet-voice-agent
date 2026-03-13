@@ -255,6 +255,19 @@ This replaced the original 40-message sliding window approach (removed 2026-03-1
 
 ---
 
+## TTS Skip When Voice Disabled ✅
+*Skip TTS synthesis entirely when voice is toggled off — saves CPU/GPU and suppresses audio playback.*
+
+- [x] Client gates `enqueueAudio` and `playAudio` on `voiceEnabledRef`
+- [x] Client sends `voice_toggle` message to server on toggle and on initial connect
+- [x] Text messages include `skip_tts` flag when voice is disabled
+- [x] Server tracks `skip_tts` state per connection
+- [x] Server skips TTS synthesis in both `process_audio` and `process_text` when `skip_tts` is true
+
+**Completed:** 2026-03-13
+
+---
+
 ## Future
 
 ### Phase 8: Meeting Companion *(parked)*
