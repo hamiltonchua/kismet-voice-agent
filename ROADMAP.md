@@ -232,12 +232,8 @@ Goal: Transform push-to-talk voice chat into a natural, always-on voice assistan
 
 ## Future
 
-### Phase 11: Token-Aware Context Management *(planned)*
-*Replace naive sliding window with token counting and compaction.*
-
-- [ ] Token counting for conversation history
-- [ ] Smart compaction (summarize older messages)
-- [ ] Context window budget management
+### ~~Phase 11: Token-Aware Context Management~~ *(eliminated)*
+*No longer needed — OpenClaw's session + LCM compaction handles context management server-side. The 40-message sliding window was removed (2026-03-13); the voice agent now sends only the latest message per request.*
 
 ### Phase 8: Meeting Companion *(parked)*
 *Passive transcription with diarization. Only responds to Ham's voice on command.*

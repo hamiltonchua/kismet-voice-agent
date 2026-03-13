@@ -299,7 +299,7 @@ Wake word (Porcupine) and speaker verification (SpeechBrain) run on CPU on all p
 - [x] **Phase 12:** Noise suppression — DeepFilterNet with UI toggle
 - [x] **Phase 13:** Pipeline observability — timing metrics, configurable model, restart script
 - [x] **Phase 14:** WebAuthn authentication — Touch ID / passkey, multi-device QR invite
-- [ ] **Phase 11:** Token-aware context management — replace sliding window with token counting and compaction *(planned)*
+- [x] ~~**Phase 11:** Token-aware context management~~ — eliminated; OpenClaw session + LCM handles context server-side (2026-03-13)
 - [ ] **Phase 8:** Meeting companion — passive transcription with diarization *(parked)*
 - [ ] **Phase 15:** Quality of life — mobile layout, conversation export, multi-speaker enrollment, performance profiling *(backlog)*
 
