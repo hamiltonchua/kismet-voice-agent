@@ -31,6 +31,13 @@ from platform_config import (
     print_config,
 )
 from auth import mount_auth_routes, auth_middleware, is_ws_authenticated
+from session_memory import (
+    clear_session_memory,
+    init_session_db,
+    load_recent_session_messages,
+    persist_session_message,
+    remove_last_session_message,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -59,56 +66,47 @@ SMART_TURN_ENABLED = os.getenv("SMART_TURN_ENABLED", "true").lower() == "true"
 SMART_TURN_THRESHOLD = float(os.getenv("SMART_TURN_THRESHOLD", "0.5"))  # Probability threshold for "turn complete"
 SMART_TURN_MAX_WAIT_SEC = float(os.getenv("SMART_TURN_MAX_WAIT_SEC", "3.0"))  # Force-send after this silence
 
-# OpenClaw gateway
-OPENCLAW_URL = os.getenv("OPENCLAW_URL", "http://127.0.0.1:18789/v1/chat/completions")
+# LLM backend (OpenAI-compatible API — LM Studio, Ollama, vLLM, etc.)
+LLM_URL = os.getenv("LLM_URL", "http://127.0.0.1:1234/v1/chat/completions")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # Optional — most local servers don't need auth
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
 
+# Conversation history — LM Studio is stateless, so we manage context locally
+MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))  # Sliding window size (user+assistant pairs)
 
-def _read_openclaw_token() -> str:
-    """Read token from OpenClaw config file, fallback to env var."""
-    token = os.getenv("OPENCLAW_TOKEN")
-    if token:
-        return token
-    try:
-        import json
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
-        with open(config_path) as f:
-            config = json.load(f)
-        return config["gateway"]["auth"]["token"]
-    except Exception:
-        return ""
-
-OPENCLAW_TOKEN = _read_openclaw_token()
-OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
+# Forgetful semantic memory (RAG — inject relevant memories into system prompt)
+FORGETFUL_ENABLED = os.getenv("FORGETFUL_ENABLED", "true").lower() == "true"
+FORGETFUL_MAX_MEMORIES = int(os.getenv("FORGETFUL_MAX_MEMORIES", "3"))  # Top-K memories to inject
 
 SPEAKER_VERIFY = os.getenv("SPEAKER_VERIFY", "auto")  # "true", "false", or "auto" (verify if enrolled)
 
 # Push endpoint — allows sub-agents to POST results back to the voice UI
-PUSH_SECRET = os.getenv("PUSH_SECRET", OPENCLAW_TOKEN)  # Defaults to OpenClaw token
+PUSH_SECRET = os.getenv("PUSH_SECRET", "")
 PUSH_URL = os.getenv("PUSH_URL", "https://prodigy.skunk-shark.ts.net:8765/push")
 
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", (
-    "You are Kismet, a voice assistant. Your response will be spoken aloud via TTS. "
-    "STRICT RULES: No emoji. No emoticons. No markdown. No bullet lists. No code blocks. No asterisks. No special characters. "
-    "Keep responses concise and conversational. Just plain spoken English, like you're talking to someone. "
-    "Be natural, warm, and to the point. "
-    "You have a voice agent canvas at /canvas for visual output. There is also a separate 'prodigy node canvas' "
-    "managed by Friday. If the user asks to open or show something on the prodigy canvas, tell them to ask Friday."
+    "You are Friday, a local voice assistant. "
+    "Be accurate, concise, and action-oriented. "
+    "Use memory only when it is relevant to the current request. "
+    "If information is missing, ask one short clarifying question. "
+    "Do not invent facts, prior conversations, or user preferences."
 ))
 
-# Appended to any task dispatched as a background cron job so the agent's
-# response is voice-friendly when it comes back via the /webhook/cron-result endpoint.
-VOICE_DELEGATE_SUFFIX = (
-    "\n\nIMPORTANT: Your response will be spoken aloud via text-to-speech. "
-    "No markdown, no bullet points, no code blocks, no asterisks, no special characters. "
-    "Plain spoken English only, concise and conversational."
+VOICE_OUTPUT_RULES = (
+    "Voice output rules:\n"
+    "- Respond in plain spoken English.\n"
+    "- Keep it brief unless the user asks for detail.\n"
+    "- Do not use markdown, bullet points, code fences, or emojis.\n"
+    "- If listing multiple items, speak them naturally in sentence form."
 )
 
+
 MEETING_SYSTEM_PROMPT = os.getenv("MEETING_SYSTEM_PROMPT", (
-    "You are Kismet, a meeting companion assistant. You have access to the meeting transcript so far. "
-    "When the user (Ham) asks you something, answer based on the transcript context. "
-    "STRICT RULES: No emoji. No emoticons. No markdown. No bullet lists. No code blocks. No asterisks. "
-    "Keep responses concise and conversational. Plain spoken English only."
+    "You are Friday, a local voice assistant helping during a meeting. "
+    "Answer using the meeting transcript when it is relevant. "
+    "Be accurate, concise, and action-oriented. "
+    "If information is missing, say so briefly."
 ))
 
 CANVAS_INSTRUCTION = (
@@ -143,18 +141,132 @@ tts_sample_rate = None
 wake_word_model = None
 deepfilter_model = None  # MLX DeepFilterNet model (mlx-audio)
 smart_turn_model = None  # SmartTurn endpoint detector (mlx-audio)
-conversation_history = []  # Local display log only — OpenClaw session manages LLM context
+conversation_history = []  # Sliding window of conversation context (sent to LLM each request)
+_last_memory_context = ""  # Background-fetched memory context for next turn
+_memory_fetch_task: asyncio.Task | None = None  # In-flight background memory query
 _model_lock = threading.Lock()  # Prevent concurrent MLX/GPU model loads
 _models_ready = False  # True once startup preload completes
 _deepfilter_available = True  # Set to False if import fails
 
-# Persistent HTTP client — reuses TCP connections to OpenClaw gateway (avoids
+# Persistent HTTP client — reuses TCP connections to LLM server (avoids
 # per-request connection setup overhead of ~50-200ms). Created at module level,
 # closed on shutdown via lifespan handler.
 _http_client = httpx.AsyncClient(
     limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
     timeout=httpx.Timeout(10.0, read=120.0),
 )
+
+# Forgetful semantic memory HTTP client (sidecar at localhost:8020)
+# Start with: uvx forgetful-ai --transport http --port 8020
+# Tight timeout — memory is optional enrichment, not critical path.
+_forgetful_client = httpx.AsyncClient(
+    base_url="http://localhost:8020",
+    timeout=httpx.Timeout(30.0),
+) if FORGETFUL_ENABLED else None
+
+_CASUAL_MEMORY_SKIP_PHRASES = {
+    'hey', 'hi', 'hello', 'yo', 'sup', 'what\'s up', 'whats up',
+    'thanks', 'thank you', 'ok', 'okay', 'cool', 'nice', 'great',
+    'bye', 'goodbye', 'see you',
+}
+
+
+def _should_query_memory(user_text: str) -> bool:
+    normalized = ' '.join(user_text.strip().lower().split())
+    if not normalized:
+        return False
+    if normalized in _CASUAL_MEMORY_SKIP_PHRASES:
+        return False
+    if len(normalized) <= 12 and len(normalized.split()) <= 3:
+        return False
+    return True
+
+
+FORGETFUL_MAX_CONTENT_CHARS = int(os.getenv("FORGETFUL_MAX_CONTENT_CHARS", "300"))  # Truncate each memory's content
+
+
+async def _fetch_memory_context(user_text: str) -> str:
+    """Background task: query Forgetful and store result for next turn."""
+    if not FORGETFUL_ENABLED or not _forgetful_client:
+        return ""
+    if not _should_query_memory(user_text):
+        return ""
+    t0 = time.time()
+    try:
+        resp = await _forgetful_client.post("/api/v1/memories/search", json={
+            "query": user_text,
+            "query_context": "Voice chat RAG — enriching response with relevant knowledge",
+            "k": FORGETFUL_MAX_MEMORIES,
+            "include_links": False,
+        })
+        search_ms = int((time.time() - t0) * 1000)
+        if resp.status_code != 200:
+            print(f"[Memory] Forgetful returned {resp.status_code} ({search_ms}ms)")
+            return ""
+        data = resp.json()
+        memories = data.get("primary_memories", [])
+        if not memories:
+            print(f"[Memory] No relevant memories ({search_ms}ms)")
+            return ""
+        lines = []
+        for mem in memories:
+            title = mem.get("title", "")
+            content = mem.get("content", "")
+            if len(content) > FORGETFUL_MAX_CONTENT_CHARS:
+                content = content[:FORGETFUL_MAX_CONTENT_CHARS] + "…"
+            lines.append(f"- {title}: {content}")
+        context = "\n".join(lines)
+        print(f"[Memory] Fetched {len(memories)} memories ({len(context)} chars, {search_ms}ms)")
+        return context
+    except httpx.ConnectError:
+        print(f"[Memory] Forgetful not reachable — skipping RAG ({int((time.time() - t0) * 1000)}ms)")
+        return ""
+    except Exception as e:
+        print(f"[Memory] Error querying Forgetful: {type(e).__name__}: {e} ({int((time.time() - t0) * 1000)}ms)")
+        return ""
+
+
+async def _background_memory_fetch(user_text: str) -> None:
+    """Fire-and-forget: fetch memories and stash for next turn."""
+    global _last_memory_context
+    try:
+        result = await _fetch_memory_context(user_text)
+        _last_memory_context = result
+    except Exception as e:
+        print(f"[Memory] Background fetch failed: {type(e).__name__}: {e}")
+
+
+def schedule_memory_fetch(user_text: str) -> None:
+    """Schedule a non-blocking memory fetch. Result available for the next turn."""
+    global _memory_fetch_task
+    if not FORGETFUL_ENABLED:
+        return
+    # Cancel any in-flight fetch
+    if _memory_fetch_task and not _memory_fetch_task.done():
+        _memory_fetch_task.cancel()
+    _memory_fetch_task = asyncio.create_task(_background_memory_fetch(user_text))
+
+
+def consume_memory_context() -> str:
+    """Consume the pre-fetched memory context (returns it once, then clears)."""
+    global _last_memory_context
+    ctx = _last_memory_context
+    _last_memory_context = ""
+    return ctx
+
+
+def _build_system_prompt(base_prompt: str, memory_context: str) -> str:
+    """Build system prompt with optional memory context injection."""
+    parts = [base_prompt.strip()]
+    if memory_context:
+        parts.append(
+            "Relevant memory:\n"
+            f"{memory_context}\n\n"
+            "Use this only if it helps answer the current request. "
+            "If it seems unrelated, ignore it."
+        )
+    parts.append(VOICE_OUTPUT_RULES)
+    return "\n\n".join(parts)
 
 
 def get_whisper():
@@ -437,29 +549,12 @@ SENTENCE_END_RE = re.compile(r'[.!?](?:\s|$)')
 # Canvas block extraction
 CANVAS_BLOCK_RE = re.compile(r'<canvas\s+type="(\w+)"(?:\s+title="([^"]*)")?\s*>(.*?)</canvas>', re.DOTALL)
 
-# Delegate block extraction — Haiku emits this to hand off to Opus
-DELEGATE_RE = re.compile(r'<delegate>(.*?)</delegate>', re.DOTALL)
+
 
 # Thinking block extraction — strip model reasoning from output
 THINKING_BLOCK_RE = re.compile(r'<thinking>.*?</thinking>', re.DOTALL)
 
-# OpenClaw silent reply tokens — suppress these from voice output
-SILENT_REPLY_TOKEN = "NO_REPLY"
-HEARTBEAT_TOKEN = "HEARTBEAT_OK"
 
-
-def _is_silent_reply(text: str) -> bool:
-    """Check if text is an OpenClaw silent reply token (NO_REPLY or HEARTBEAT_OK)."""
-    normalized = text.strip().upper()
-    return normalized in (SILENT_REPLY_TOKEN, HEARTBEAT_TOKEN)
-
-
-def _is_silent_reply_prefix(text: str) -> bool:
-    """Check if text is a streaming prefix of a silent reply token (e.g. 'NO', 'NO_')."""
-    normalized = re.sub(r'[^A-Z_]', '', text.strip().upper())
-    if not normalized:
-        return False
-    return SILENT_REPLY_TOKEN.startswith(normalized) or HEARTBEAT_TOKEN.startswith(normalized)
 
 
 def extract_canvas_blocks(text: str) -> tuple[str, list[dict]]:
@@ -535,51 +630,120 @@ async def push_canvas(blocks: list[dict], loop):
         print(f"[Canvas] Pushed {block['type']}: {block['title'] or '(untitled)'} to {len(_canvas_clients)} client(s)")
 
 
-async def run_delegate(task: str):
-    """
-    Call Opus with the delegated task (non-streaming), then push the result
-    to the active voice UI via the push queue.
-    """
-    print(f"[Delegate] Spawning Opus for: \"{task[:80]}\"")
-    full_text = ""
-    try:
-        response = await _http_client.post(
-            OPENCLAW_URL,
-            headers={
-                "Authorization": f"Bearer {OPENCLAW_TOKEN}",
-                "Content-Type": "application/json",
-                "x-openclaw-agent-id": OPENCLAW_AGENT,
-            },
-            json={
-                "model": "anthropic/claude-opus-4-6",
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"/think:off {task}"},
-                ],
-                "user": "voice-delegate",
-                "stream": False,
-                "thinking": {"type": "disabled"},
-            },
-            timeout=httpx.Timeout(10.0, read=180.0),
-        )
-        response.raise_for_status()
-        data = response.json()
-        full_text = data["choices"][0]["message"]["content"].strip()
-        # Suppress silent replies from delegate too
-        if _is_silent_reply(full_text):
-            print(f"[Delegate] Silent reply from Opus — suppressing")
-            return
-        print(f"[Delegate] Opus complete ({len(full_text)} chars)")
-    except Exception as e:
-        print(f"[Delegate] Error calling Opus: {e}")
-        full_text = "Sorry, I ran into a problem getting that answer."
-    await _push_queue.put({"text": full_text, "skip_tts": False})
+# ---------------------------------------------------------------------------
+# Harmony response format filter (gpt-oss models)
+# ---------------------------------------------------------------------------
+# gpt-oss models emit multi-channel output using special tokens:
+#   <|channel|>analysis  — chain-of-thought (suppress)
+#   <|channel|>commentary — tool calls (suppress)
+#   <|channel|>final     — user-facing text (keep)
+# This filter extracts only 'final' channel content for the voice pipeline.
+# Transparent passthrough for non-Harmony models (auto-detected on first token).
+_HARMONY_CTRL_RE = re.compile(r'<\|(?:start|end|return|call|channel|constrain|message)\|>')
+
+
+class HarmonyFilter:
+    """Streaming filter that extracts only 'final' channel content from Harmony format."""
+
+    def __init__(self):
+        self._buf = ""
+        self._passthrough = False  # True once we confirm non-Harmony output
+        self._harmony = False      # True once Harmony tokens detected (never reverts)
+        self._emitting = False     # True when inside final channel content
+
+    def feed(self, token: str) -> str:
+        """Feed a streaming token. Returns text to emit (empty if suppressed)."""
+        if self._passthrough:
+            return token
+
+        self._buf += token
+
+        # Already confirmed Harmony — go straight to processing
+        if self._harmony:
+            return self._process()
+
+        # Fast path: first non-whitespace isn't <| → not Harmony, pass through
+        stripped = self._buf.lstrip()
+        if stripped and not stripped.startswith("<|"):
+            self._passthrough = True
+            out = self._buf
+            self._buf = ""
+            return out
+
+        # Check for Harmony control tokens
+        if "<|channel|>" in self._buf or "<|start|>" in self._buf:
+            self._harmony = True
+            return self._process()
+
+        # Safety: 100+ chars with no Harmony tokens → passthrough
+        if len(self._buf) > 100:
+            self._passthrough = True
+            out = self._buf
+            self._buf = ""
+            return out
+
+        return ""
+
+    def _process(self) -> str:
+        output = ""
+        while True:
+            if self._emitting:
+                # Emit content until end-of-block marker
+                earliest_idx = len(self._buf)
+                earliest_len = 0
+                for marker in ("<|end|>", "<|return|>", "<|start|>", "<|call|>"):
+                    idx = self._buf.find(marker)
+                    if idx != -1 and idx < earliest_idx:
+                        earliest_idx = idx
+                        earliest_len = len(marker)
+
+                if earliest_idx < len(self._buf):
+                    output += self._buf[:earliest_idx]
+                    self._buf = self._buf[earliest_idx + earliest_len:]
+                    self._emitting = False
+                    continue
+                else:
+                    # No end marker yet — emit safe portion, keep tail
+                    safe = max(0, len(self._buf) - 12)
+                    if safe > 0:
+                        output += self._buf[:safe]
+                        self._buf = self._buf[safe:]
+                    break
+            else:
+                # Suppressing — look for <|channel|>final...<|message|>
+                idx = self._buf.find("<|channel|>final")
+                if idx != -1:
+                    msg_idx = self._buf.find("<|message|>", idx)
+                    if msg_idx != -1:
+                        self._buf = self._buf[msg_idx + len("<|message|>"):]
+                        self._emitting = True
+                        continue
+                    else:
+                        # Keep from final marker onwards, wait for <|message|>
+                        self._buf = self._buf[idx:]
+                        break
+                else:
+                    # No final channel — discard accumulated non-final content
+                    if len(self._buf) > 30:
+                        self._buf = self._buf[-20:]
+                    break
+        return output
+
+    def flush(self) -> str:
+        """Flush remaining buffer at end of stream."""
+        if self._passthrough or self._emitting:
+            out = _HARMONY_CTRL_RE.sub("", self._buf)
+            self._buf = ""
+            return out.strip()
+        self._buf = ""
+        return ""
+
 
 
 
 async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt: str | None = None) -> AsyncIterator[tuple[str, str]]:
     """
-    Stream chat response from OpenClaw.
+    Stream chat response from LLM server (OpenAI-compatible API).
     Yields tuples of (event_type, data):
       - ("token", token_text) for each token
       - ("sentence", sentence_text) for each complete sentence
@@ -589,41 +753,47 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
     """
     global conversation_history
 
-    # Prepend /think:off directive to disable extended thinking (reduces latency for voice)
-    prefixed_text = f"/think:off {user_text}"
+    # Use pre-fetched memory context (from previous turn's background query)
+    memory_context = consume_memory_context()
+    if memory_context:
+        print(f"[Memory] Injecting pre-fetched memories ({len(memory_context)} chars)")
+    effective_prompt = _build_system_prompt(system_prompt or SYSTEM_PROMPT, memory_context)
+    # Schedule background memory fetch for the NEXT turn (non-blocking)
+    schedule_memory_fetch(user_text)
 
-    # Send only the latest message — OpenClaw's session manages conversation
-    # context (transcript + LCM compaction) server-side via stable "voice-chat" session key
-    messages = [{"role": "system", "content": system_prompt or SYSTEM_PROMPT}, {"role": "user", "content": prefixed_text}]
+    # Build messages with conversation history (sliding window)
+    messages = [{"role": "system", "content": effective_prompt}]
+    messages.extend(conversation_history[-MAX_HISTORY_MESSAGES:])
+    messages.append({"role": "user", "content": user_text})
 
-    # Track locally for UI display
+    # Track in conversation history + persistent session memory
     conversation_history.append({"role": "user", "content": user_text})
+    persist_session_message("user", user_text)
+    # Trim history to sliding window
+    if len(conversation_history) > MAX_HISTORY_MESSAGES:
+        conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
 
     full_text = ""
     buffer = ""
     cancelled = False
     got_first_token = False
     working_emitted = False
-    silent_reply = False
-    initial_buf = ""  # Buffer initial tokens to detect NO_REPLY before yielding
-    initial_phase = True  # True until we confirm this isn't a silent reply
+    harmony = HarmonyFilter()
     request_start = time.time()
+
+    headers = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
     try:
         async with _http_client.stream(
             "POST",
-            OPENCLAW_URL,
-            headers={
-                "Authorization": f"Bearer {OPENCLAW_TOKEN}",
-                "Content-Type": "application/json",
-                "x-openclaw-agent-id": OPENCLAW_AGENT,
-            },
+            LLM_URL,
+            headers=headers,
             json={
-                "model": os.getenv("OPENCLAW_MODEL", "anthropic/claude-haiku-3.5-20241022"),
+                "model": LLM_MODEL,
                 "messages": messages,
-                "user": "voice-chat",
                 "stream": True,
-                "thinking": {"type": "disabled"},
             },
             timeout=httpx.Timeout(10.0, read=120.0),
         ) as response:
@@ -659,41 +829,27 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
                             ttft_ms = int((time.time() - request_start) * 1000)
                             print(f"[LLM] TTFT: {ttft_ms}ms")
                         got_first_token = True
-                        full_text += token
 
-                        # Buffer initial tokens to detect NO_REPLY before sending to TTS
-                        if initial_phase:
-                            initial_buf += token
-                            # Check if still a possible silent reply prefix
-                            if _is_silent_reply_prefix(initial_buf):
-                                continue  # Keep buffering
-                            elif _is_silent_reply(initial_buf):
-                                silent_reply = True
-                                print(f"[LLM] Silent reply detected: \"{initial_buf.strip()}\" — suppressing")
-                                continue
-                            else:
-                                # Not a silent reply — flush buffered tokens
-                                initial_phase = False
-                                buffer += initial_buf
-                                for ch in initial_buf:
-                                    yield ("token", ch)
-                        else:
-                            buffer += token
-                            yield ("token", token)
+                        # Filter Harmony control tokens — only keep 'final' channel
+                        filtered = harmony.feed(token)
+                        if not filtered:
+                            continue
+                        full_text += filtered
+                        buffer += filtered
+                        yield ("token", filtered)
 
-                        # Check for sentence boundaries (only after initial phase)
-                        if not initial_phase:
-                            while True:
-                                match = SENTENCE_END_RE.search(buffer)
-                                if not match:
-                                    break
+                        # Check for sentence boundaries
+                        while True:
+                            match = SENTENCE_END_RE.search(buffer)
+                            if not match:
+                                break
 
-                                end_pos = match.end()
-                                sentence = buffer[:end_pos].strip()
-                                buffer = buffer[end_pos:].lstrip()
+                            end_pos = match.end()
+                            sentence = buffer[:end_pos].strip()
+                            buffer = buffer[end_pos:].lstrip()
 
-                                if sentence:
-                                    yield ("sentence", sentence)
+                            if sentence:
+                                yield ("sentence", sentence)
 
                 except json.JSONDecodeError:
                     continue
@@ -702,28 +858,28 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
         print(f"[LLM] HTTP error: {e}")
         cancelled = True
 
-    # Check if the complete response is a silent reply (catches edge cases)
-    if not cancelled and _is_silent_reply(full_text):
-        silent_reply = True
-        print(f"[LLM] Silent reply (complete): \"{full_text.strip()}\" — suppressing")
+    # Flush any remaining content from the Harmony filter
+    remaining = harmony.flush()
+    if remaining:
+        full_text += remaining
+        buffer += remaining
 
-    if silent_reply:
-        # Remove user message from display log — this was a system housekeeping turn
+    if cancelled:
+        # Remove user message from history on cancel
         if conversation_history and conversation_history[-1]["role"] == "user":
             conversation_history.pop()
-        yield ("cancelled", "")
-    elif cancelled:
-        # Remove user message from display log on cancel
-        if conversation_history and conversation_history[-1]["role"] == "user":
-            conversation_history.pop()
+        remove_last_session_message("user")
         yield ("cancelled", full_text)
     else:
         # Emit remaining text
         if buffer.strip():
             yield ("sentence", buffer.strip())
 
-        # Track assistant response in display log
+        # Track assistant response in history
         conversation_history.append({"role": "assistant", "content": full_text})
+        persist_session_message("assistant", full_text)
+        if len(conversation_history) > MAX_HISTORY_MESSAGES:
+            conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
         llm_total_ms = int((time.time() - request_start) * 1000)
         print(f"[LLM] → \"{full_text[:80]}...\" ({llm_total_ms}ms)" if len(full_text) > 80 else f"[LLM] → \"{full_text}\" ({llm_total_ms}ms)")
         yield ("done", full_text)
@@ -879,6 +1035,9 @@ async def _auth_middleware(request, call_next):
 @app.on_event("startup")
 async def startup_event():
     """Preload all models at server start, not per-connection."""
+    global conversation_history
+    init_session_db()
+    conversation_history = load_recent_session_messages(MAX_HISTORY_MESSAGES)
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, preload_models)
 
@@ -1002,7 +1161,7 @@ async def push_endpoint(request: Request):
     Allow sub-agents (e.g. Opus) to POST results back to the active voice UI.
     The result is spoken aloud and shown in the conversation as an assistant message.
 
-    Auth: Bearer token (same as OPENCLAW_TOKEN / PUSH_SECRET).
+    Auth: Bearer token (PUSH_SECRET env var).
     Body: { "text": "...", "skip_tts": false }
 
     Sub-agent usage:
@@ -1032,14 +1191,14 @@ async def push_endpoint(request: Request):
 @app.post("/webhook/cron-result")
 async def cron_result_webhook(request: Request):
     """
-    Receive a cron finished-run event from OpenClaw and speak the result.
+    Receive a cron finished-run event and speak the result.
 
-    OpenClaw POSTs this when a cron job with delivery.mode="webhook" completes.
-    The agent running the job should be instructed to respond in plain spoken
-    English (no markdown, no bullet lists) since the output will be read aloud.
+    External systems POST here when a scheduled job completes.
+    The response should be in plain spoken English (no markdown, no bullet lists)
+    since the output will be read aloud.
 
     Auth: Bearer token (same as PUSH_SECRET).
-    Body: OpenClaw cron finished event JSON, e.g.:
+    Body: Cron finished event JSON, e.g.:
         {
             "jobId": "...",
             "action": "finished",
@@ -1073,10 +1232,6 @@ async def cron_result_webhook(request: Request):
     if not summary:
         print(f"[CronWebhook] No summary in finished event, skipping")
         return JSONResponse({"ok": True, "note": "no summary, skipped"})
-
-    if _is_silent_reply(summary):
-        print(f"[CronWebhook] Silent reply in summary, suppressing")
-        return JSONResponse({"ok": True, "note": "silent reply suppressed"})
 
     await _push_queue.put({"text": summary, "skip_tts": False})
     print(f"[CronWebhook] Queued summary for TTS ({len(summary)} chars)")
@@ -1306,8 +1461,6 @@ async def websocket_endpoint(ws: WebSocket):
             effective_prompt = SYSTEM_PROMPT
         in_canvas_block = False    # Track if we're inside a <canvas> block
         canvas_token_buf = ""      # Buffer tokens while inside canvas block
-        in_delegate_block = False  # Track if we're inside a <delegate> block
-        delegate_token_buf = ""    # Buffer tokens while inside delegate block
         in_thinking_block = False  # Track if we're inside a <thinking> block
         thinking_token_buf = ""    # Buffer tokens while inside thinking block
 
@@ -1330,18 +1483,6 @@ async def websocket_endpoint(ws: WebSocket):
                 if in_thinking_block:
                     continue
                 thinking_token_buf = ""
-
-                # Always suppress <delegate> blocks — never spoken or displayed
-                delegate_token_buf += data
-                if not in_delegate_block and '<delegate>' in delegate_token_buf:
-                    in_delegate_block = True
-                if in_delegate_block and '</delegate>' in delegate_token_buf:
-                    in_delegate_block = False
-                    delegate_token_buf = ""
-                    continue
-                if in_delegate_block:
-                    continue
-                delegate_token_buf = ""
 
                 if canvas_enabled:
                     canvas_token_buf += data
@@ -1368,10 +1509,8 @@ async def websocket_endpoint(ws: WebSocket):
                 if cancel_event.is_set():
                     continue
 
-                # Skip TTS for any sentence with thinking, delegate, or canvas markup
+                # Skip TTS for any sentence with thinking or canvas markup
                 if '<thinking>' in data or '</thinking>' in data or in_thinking_block:
-                    continue
-                if '<delegate>' in data or '</delegate>' in data or in_delegate_block:
                     continue
                 if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
                     continue
@@ -1433,22 +1572,6 @@ async def websocket_endpoint(ws: WebSocket):
                         await ws.send_json({"type": "canvas_pushed", "count": len(canvas_blocks)})
                     data = cleaned_text
 
-                # Detect and spawn delegate tasks
-                if '<delegate>' in data:
-                    delegate_match = DELEGATE_RE.search(data)
-                    if delegate_match:
-                        delegate_body = delegate_match.group(1).strip()
-                        task_match = re.search(r'TASK:\s*(.+?)(?:\nPUSH_URL:|$)', delegate_body, re.DOTALL)
-                        if task_match:
-                            task_text = task_match.group(1).strip()
-                            print(f"[Delegate] Detected, spawning Opus: \"{task_text[:80]}\"")
-                            asyncio.create_task(run_delegate(task_text))
-                    # Strip delegate block from display text
-                    data = DELEGATE_RE.sub("", data).strip()
-                    data = re.sub(r'\n{3,}', '\n\n', data)
-                    if conversation_history and conversation_history[-1]["role"] == "assistant":
-                        conversation_history[-1]["content"] = data
-
                 llm_time = time.time() - llm_start
                 last_activity = time.time()
                 await ws.send_json({
@@ -1489,8 +1612,6 @@ async def websocket_endpoint(ws: WebSocket):
             effective_prompt = SYSTEM_PROMPT
         in_canvas_block = False
         canvas_token_buf = ""
-        in_delegate_block = False
-        delegate_token_buf = ""
         in_thinking_block = False
         thinking_token_buf = ""
 
@@ -1514,18 +1635,6 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 thinking_token_buf = ""
 
-                # Always suppress <delegate> blocks
-                delegate_token_buf += data
-                if not in_delegate_block and '<delegate>' in delegate_token_buf:
-                    in_delegate_block = True
-                if in_delegate_block and '</delegate>' in delegate_token_buf:
-                    in_delegate_block = False
-                    delegate_token_buf = ""
-                    continue
-                if in_delegate_block:
-                    continue
-                delegate_token_buf = ""
-
                 if canvas_enabled:
                     canvas_token_buf += data
                     if not in_canvas_block and '<canvas' in canvas_token_buf:
@@ -1545,8 +1654,6 @@ async def websocket_endpoint(ws: WebSocket):
                 if cancel_event.is_set():
                     continue
                 if '<thinking>' in data or '</thinking>' in data or in_thinking_block:
-                    continue
-                if '<delegate>' in data or '</delegate>' in data or in_delegate_block:
                     continue
                 if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
                     continue
@@ -1598,21 +1705,6 @@ async def websocket_endpoint(ws: WebSocket):
                         asyncio.create_task(push_canvas(canvas_blocks, loop))
                         await ws.send_json({"type": "canvas_pushed", "count": len(canvas_blocks)})
                     data = cleaned_text
-
-                # Detect and spawn delegate tasks
-                if '<delegate>' in data:
-                    delegate_match = DELEGATE_RE.search(data)
-                    if delegate_match:
-                        delegate_body = delegate_match.group(1).strip()
-                        task_match = re.search(r'TASK:\s*(.+?)(?:\nPUSH_URL:|$)', delegate_body, re.DOTALL)
-                        if task_match:
-                            task_text = task_match.group(1).strip()
-                            print(f"[Delegate] Detected, spawning Opus: \"{task_text[:80]}\"")
-                            asyncio.create_task(run_delegate(task_text))
-                    data = DELEGATE_RE.sub("", data).strip()
-                    data = re.sub(r'\n{3,}', '\n\n', data)
-                    if conversation_history and conversation_history[-1]["role"] == "assistant":
-                        conversation_history[-1]["content"] = data
 
                 llm_time = time.time() - llm_start
                 last_activity = time.time()
@@ -1690,6 +1782,10 @@ async def websocket_endpoint(ws: WebSocket):
             return
 
         await ws.send_json({"type": "transcript", "role": "user", "text": user_text})
+        conversation_history.append({"role": "user", "content": user_text})
+        persist_session_message("user", user_text)
+        if len(conversation_history) > MAX_HISTORY_MESSAGES:
+            conversation_history[:] = conversation_history[-MAX_HISTORY_MESSAGES:]
 
         # 3. Send to LLM with transcript context
         transcript_context = meeting_session.get_transcript_text(last_n=50)
@@ -1708,9 +1804,11 @@ async def websocket_endpoint(ws: WebSocket):
             {"role": "user", "content": context_msg},
         ]
 
-        headers = {"Authorization": f"Bearer {OPENCLAW_TOKEN}"} if OPENCLAW_TOKEN else {}
+        headers = {"Content-Type": "application/json"}
+        if LLM_API_KEY:
+            headers["Authorization"] = f"Bearer {LLM_API_KEY}"
         payload = {
-            "model": OPENCLAW_AGENT,
+            "model": LLM_MODEL,
             "messages": meeting_messages,
             "stream": True,
         }
@@ -1718,7 +1816,7 @@ async def websocket_endpoint(ws: WebSocket):
         full_text = ""
         buffer = ""
 
-        async with _http_client.stream("POST", OPENCLAW_URL, json=payload, headers=headers, timeout=httpx.Timeout(10.0, read=60.0)) as resp:
+        async with _http_client.stream("POST", LLM_URL, json=payload, headers=headers, timeout=httpx.Timeout(10.0, read=60.0)) as resp:
             if resp.status_code != 200:
                 await ws.send_json({"type": "error", "text": "LLM request failed"})
                 return
@@ -1778,16 +1876,13 @@ async def websocket_endpoint(ws: WebSocket):
             except Exception:
                 pass
 
-        # Suppress silent replies from meeting mode
-        if _is_silent_reply(full_text):
-            print(f"[Meeting] Silent reply — suppressing")
-            await ws.send_json({"type": "stream_end", "text": "", "times": {"llm": 0, "tts": 0}, "sentences": 0})
-            return
-
         # Add response to meeting transcript + display log
         if full_text:
             meeting_session.add_entry("Kismet", full_text)
-            conversation_history.append({"role": "assistant", "content": full_text})  # display log only
+            conversation_history.append({"role": "assistant", "content": full_text})
+            persist_session_message("assistant", full_text)
+            if len(conversation_history) > MAX_HISTORY_MESSAGES:
+                conversation_history[:] = conversation_history[-MAX_HISTORY_MESSAGES:]
 
         await ws.send_json({
             "type": "stream_end",
@@ -2005,7 +2100,8 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg["type"] == "clear":
                 cancel_event.set()
-                conversation_history.clear()  # Clear display log (OpenClaw session persists server-side)
+                conversation_history.clear()  # Clear conversation history
+                clear_session_memory()
                 if meeting_session:
                     meeting_session.clear()
                 await ws.send_json({"type": "status", "text": "Conversation cleared."})
@@ -2042,9 +2138,12 @@ if __name__ == "__main__":
         print(f"[SSL] HTTPS enabled")
 
     print_config()
-    print(f"[LLM] OpenClaw endpoint: {OPENCLAW_URL}")
+    print(f"[LLM] Endpoint: {LLM_URL}")
+    print(f"[LLM] Model: {LLM_MODEL}")
+    print(f"[LLM] History: {MAX_HISTORY_MESSAGES} messages (sliding window)")
+    print(f"[Memory] Forgetful RAG: {'enabled' if FORGETFUL_ENABLED else 'disabled'}" + (f" (top-{FORGETFUL_MAX_MEMORIES})" if FORGETFUL_ENABLED else ""))
     print(f"[TTS] Engine: {TTS_ENGINE} (backend: {TTS_BACKEND})")
-    print(f"[Push] Endpoint: POST {PUSH_URL}  (Bearer token = PUSH_SECRET or OPENCLAW_TOKEN)")
+    print(f"[Push] Endpoint: POST {PUSH_URL}")
     if WAKE_WORD_ENABLED:
         print(f"[WakeWord] Porcupine keyword: {WAKE_WORD_KEYWORD}, Sensitivity: {WAKE_WORD_SENSITIVITY}")
     uvicorn.run(app, host="0.0.0.0", port=8765, **kwargs)
