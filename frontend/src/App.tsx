@@ -543,11 +543,10 @@ export default function App() {
     } else if (type === 'task_error') {
       const taskId = msg.task_id as string
       const errorMsg = msg.error as string
-      const description = msg.description as string
       setActiveTasks(prev => prev.map(t =>
         t.id === taskId ? { ...t, status: 'error', error: errorMsg } : t
       ))
-      toast.error(`Task failed: ${description ?? taskId} — ${errorMsg}`)
+      toast.error(`Task failed (${taskId}): ${errorMsg}`)
       setTimeout(() => {
         setActiveTasks(prev => prev.filter(t => t.id !== taskId))
       }, 5000)

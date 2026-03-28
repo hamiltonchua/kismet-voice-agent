@@ -979,7 +979,6 @@ class BackgroundTaskManager:
         self._metadata: dict[str, dict] = {}
 
     def start_delegate(self, task_id: str, description: str, coro) -> None:
-        """Start a background delegate task and send task_start message."""
         print(f"[Delegate] Starting background delegate: {task_id} — {description[:60]}")
         task = asyncio.create_task(coro)
         self._tasks[task_id] = task
@@ -987,17 +986,12 @@ class BackgroundTaskManager:
             "description": description,
             "started_at": time.time(),
         }
-
-        # Send task_start message
-        asyncio.get_event_loop().create_task(
+        asyncio.create_task(
             self._ws.send_json({"type": "task_start", "task_id": task_id, "description": description})
         )
-
-        # Attach done callback
         task.add_done_callback(lambda t: self._on_task_done(task_id, t))
 
     def _on_task_done(self, task_id: str, task: asyncio.Task) -> None:
-        """Handle task completion: put result in queue and send WS message."""
         meta = self._metadata.get(task_id, {})
         description = meta.get("description", "")
         started_at = meta.get("started_at")
@@ -1006,10 +1000,8 @@ class BackgroundTaskManager:
         try:
             result = task.result()
             print(f"[Delegate] Delegate {task_id} completed in {elapsed:.2f}s")
-            # Put result in queue for polling
             self._results.put_nowait((task_id, description, result))
-            # Send task_complete message
-            asyncio.get_event_loop().create_task(
+            asyncio.get_running_loop().create_task(
                 self._ws.send_json({"type": "task_complete", "task_id": task_id})
             )
         except asyncio.CancelledError:
@@ -1017,13 +1009,11 @@ class BackgroundTaskManager:
             pass
         except Exception as e:
             print(f"[Delegate] Delegate {task_id} failed in {elapsed:.2f}s: {e}")
-            # Send task_error message
-            asyncio.get_event_loop().create_task(
+            asyncio.get_running_loop().create_task(
                 self._ws.send_json({"type": "task_error", "task_id": task_id, "error": str(e)})
             )
 
     def get_pending_result(self) -> tuple[str, str, str] | None:
-        """Non-blocking check for completed task result. Returns (task_id, description, result) or None."""
         try:
             return self._results.get_nowait()
         except asyncio.QueueEmpty:
@@ -1031,11 +1021,9 @@ class BackgroundTaskManager:
 
     @property
     def active_count(self) -> int:
-        """Return number of running (not done) tasks."""
         return sum(1 for task in self._tasks.values() if not task.done())
 
     def cancel_all(self) -> None:
-        """Cancel all running tasks."""
         for task in self._tasks.values():
             if not task.done():
                 task.cancel()
@@ -1540,6 +1528,7 @@ async def chat_stream(
     cancel_event: asyncio.Event,
     system_prompt: str | None = None,
     bg_manager: BackgroundTaskManager | None = None,
+    skip_user_persist: bool = False,
 ) -> AsyncIterator[tuple[str, str]]:
     """
     Stream chat response from LLM server (OpenAI-compatible API).
@@ -1567,12 +1556,13 @@ async def chat_stream(
     messages.append({"role": "user", "content": user_text})
 
     # Track in conversation history + persistent session memory
-    async with _history_lock:
-        conversation_history.append({"role": "user", "content": user_text})
-        persist_session_message("user", user_text)
-        # Trim history to sliding window
-        if len(conversation_history) > MAX_HISTORY_MESSAGES:
-            conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
+    if not skip_user_persist:
+        async with _history_lock:
+            conversation_history.append({"role": "user", "content": user_text})
+            persist_session_message("user", user_text)
+            # Trim history to sliding window
+            if len(conversation_history) > MAX_HISTORY_MESSAGES:
+                conversation_history = conversation_history[-MAX_HISTORY_MESSAGES:]
 
     MAX_TOOL_ITERATIONS = 3
     request_start = time.time()
@@ -2814,7 +2804,7 @@ async def websocket_endpoint(ws: WebSocket):
         spoken_structures: set[str] = set()
 
         # Stream LLM summarization — pass bg_manager=None to prevent recursive delegates
-        async for event_type, data in chat_stream(wrapper_text, cancel_event, bg_manager=None):
+        async for event_type, data in chat_stream(wrapper_text, cancel_event, bg_manager=None, skip_user_persist=True):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
                 break
 
@@ -2842,8 +2832,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "index": sentence_count,
                     })
                     sentence_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[TTS] synthesis error during delegate delivery: {e}")
 
             elif event_type == "done":
                 full_text = data
