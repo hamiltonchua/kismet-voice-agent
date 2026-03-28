@@ -980,9 +980,13 @@ class BackgroundTaskManager:
 
     def start_delegate(self, task_id: str, description: str, coro) -> None:
         """Start a background delegate task and send task_start message."""
+        print(f"[Delegate] Starting background delegate: {task_id} — {description[:60]}")
         task = asyncio.create_task(coro)
         self._tasks[task_id] = task
-        self._metadata[task_id] = {"description": description}
+        self._metadata[task_id] = {
+            "description": description,
+            "started_at": time.time(),
+        }
 
         # Send task_start message
         asyncio.get_event_loop().create_task(
@@ -994,10 +998,14 @@ class BackgroundTaskManager:
 
     def _on_task_done(self, task_id: str, task: asyncio.Task) -> None:
         """Handle task completion: put result in queue and send WS message."""
-        description = self._metadata.get(task_id, {}).get("description", "")
+        meta = self._metadata.get(task_id, {})
+        description = meta.get("description", "")
+        started_at = meta.get("started_at")
+        elapsed = max(0.0, time.time() - started_at) if isinstance(started_at, (int, float)) else 0.0
 
         try:
             result = task.result()
+            print(f"[Delegate] Delegate {task_id} completed in {elapsed:.2f}s")
             # Put result in queue for polling
             self._results.put_nowait((task_id, description, result))
             # Send task_complete message
@@ -1008,6 +1016,7 @@ class BackgroundTaskManager:
             # Cancelled tasks are silent — no error message
             pass
         except Exception as e:
+            print(f"[Delegate] Delegate {task_id} failed in {elapsed:.2f}s: {e}")
             # Send task_error message
             asyncio.get_event_loop().create_task(
                 self._ws.send_json({"type": "task_error", "task_id": task_id, "error": str(e)})
