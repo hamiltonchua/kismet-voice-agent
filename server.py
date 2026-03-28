@@ -1483,7 +1483,11 @@ def _execute_list_directory(arguments: dict) -> str:
         return f"Error listing {target}: {e}"
 
 
-async def execute_tool(tool_name: str, arguments: dict) -> str:
+async def execute_tool(
+    tool_name: str,
+    arguments: dict,
+    bg_manager: BackgroundTaskManager | None = None,
+) -> str:
     """Execute a Harmony tool call and return the result text."""
     if tool_name in ("functions.read_file", "read_file"):
         print(f"[Tool] read_file: {arguments.get('path', '?')}")
@@ -1503,6 +1507,17 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
             return "Error: No task provided for delegation."
         if not DELEGATE_ENABLED:
             return "Delegation is disabled. Answer based on your own knowledge."
+        if bg_manager is not None:
+            task_id = uuid.uuid4().hex[:8]
+            description = task[:80].replace("\n", " ")
+            bg_manager.start_delegate(task_id, description, call_delegated_agent(task))
+            print(f"[Delegate] Fired background delegate {task_id}: {description[:60]}")
+            return (
+                f"Task '{description[:80]}' has been delegated to a background agent "
+                f"(task {task_id}). It will run asynchronously. "
+                f"Briefly acknowledge to the user that you are working on this in the "
+                f"background and they can continue talking to you."
+            )
         return await call_delegated_agent(task)
 
     print(f"[Tool] Unknown tool: {tool_name}")
@@ -1511,7 +1526,12 @@ async def execute_tool(tool_name: str, arguments: dict) -> str:
 
 
 
-async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt: str | None = None) -> AsyncIterator[tuple[str, str]]:
+async def chat_stream(
+    user_text: str,
+    cancel_event: asyncio.Event,
+    system_prompt: str | None = None,
+    bg_manager: BackgroundTaskManager | None = None,
+) -> AsyncIterator[tuple[str, str]]:
     """
     Stream chat response from LLM server (OpenAI-compatible API).
     Yields tuples of (event_type, data):
@@ -1677,7 +1697,7 @@ async def chat_stream(user_text: str, cancel_event: asyncio.Event, system_prompt
                 yield ("working", "")
 
             # Execute tool, then continue loop with appended context
-            tool_result = await execute_tool(tool_name, tool_args)
+            tool_result = await execute_tool(tool_name, tool_args, bg_manager=bg_manager)
             messages.append({"role": "assistant", "content": raw_text})
             messages.append({
                 "role": "user",
@@ -2153,6 +2173,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Cancellation event for current processing
     cancel_event = asyncio.Event()
     processing_task = None
+    bg_manager = BackgroundTaskManager(ws)
     idle_check_task = None
     
     async def check_idle():
@@ -2307,7 +2328,7 @@ async def websocket_endpoint(ws: WebSocket):
         in_thinking_block = False  # Track if we're inside a <thinking> block
         thinking_token_buf = ""    # Buffer tokens while inside thinking block
 
-        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt):
+        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt, bg_manager=bg_manager):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
                 continue
 
@@ -2463,7 +2484,7 @@ async def websocket_endpoint(ws: WebSocket):
         in_thinking_block = False
         thinking_token_buf = ""
 
-        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt):
+        async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt, bg_manager=bg_manager):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
                 continue
 
