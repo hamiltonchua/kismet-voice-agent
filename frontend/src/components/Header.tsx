@@ -1,6 +1,7 @@
 // frontend/src/components/Header.tsx
 import * as React from 'react'
 import type { BackgroundTask } from '../types'
+import { TaskBadge } from './TaskBadge'
 
 interface HeaderProps {
   statusText: string
@@ -17,7 +18,8 @@ interface HeaderProps {
   onMeetingToggle: () => void
 }
 
-export function Header({ statusText, statusClass, connectionDot, meetingMode, enrolled, verifyEnabled, canvasEnabled, noiseSuppressionEnabled, activeTasks: _activeTasks, onEnroll, onVerifyToggle, onMeetingToggle }: HeaderProps) {
+export function Header({ statusText, statusClass, connectionDot, meetingMode, enrolled, verifyEnabled, canvasEnabled, noiseSuppressionEnabled, activeTasks, onEnroll, onVerifyToggle, onMeetingToggle }: HeaderProps) {
+  const runningCount = activeTasks?.filter(t => t.status === 'running').length ?? 0
   // Mobile-only top bar — hidden on desktop (md+)
   return (
     <header
@@ -31,6 +33,7 @@ export function Header({ statusText, statusClass, connectionDot, meetingMode, en
       <h1 style={{ fontSize: '1.1rem', fontWeight: 600 }}>Kismet Labs</h1>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span className={`conn-dot ${connectionDot}`} />
+        <TaskBadge count={runningCount} />
         {canvasEnabled && (
           <span style={{ fontSize: '0.6rem', background: 'var(--purple)', color: 'white', padding: '1px 5px', borderRadius: 4, fontWeight: 600 }}>
             CANVAS
