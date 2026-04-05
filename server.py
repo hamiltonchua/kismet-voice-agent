@@ -39,6 +39,7 @@ from session_memory import (
     persist_session_message,
     remove_last_session_message,
 )
+from stream_markup_filter import StreamMarkupFilter
 
 # ---------------------------------------------------------------------------
 # Config
@@ -626,7 +627,7 @@ def detect_wake_word(audio_chunk: np.ndarray) -> tuple[bool, float]:
 SENTENCE_END_RE = re.compile(r'[.!?](?:\s|$)')
 
 # Canvas block extraction
-CANVAS_BLOCK_RE = re.compile(r'<canvas\s+type="(\w+)"(?:\s+title="([^"]*)")?\s*>(.*?)</canvas>', re.DOTALL)
+CANVAS_BLOCK_RE = re.compile(r'<canvas\b([^>]*)>(.*?)</canvas>', re.DOTALL | re.IGNORECASE)
 
 
 
@@ -640,10 +641,16 @@ def extract_canvas_blocks(text: str) -> tuple[str, list[dict]]:
     """Extract <canvas> blocks from text. Returns (cleaned_text, blocks)."""
     blocks = []
     for m in CANVAS_BLOCK_RE.finditer(text):
+        attrs = m.group(1) or ""
+        content = m.group(2)
+        type_match = re.search(r'\btype="([^\"]+)"', attrs, re.IGNORECASE)
+        title_match = re.search(r'\btitle="([^\"]*)"', attrs, re.IGNORECASE)
+        canvas_type = (type_match.group(1) if type_match else "text").strip().lower()
+        title = (title_match.group(1) if title_match else "").strip()
         blocks.append({
-            "type": m.group(1),
-            "title": m.group(2) or "",
-            "content": m.group(3).strip(),
+            "type": canvas_type,
+            "title": title,
+            "content": content.strip(),
         })
     cleaned = CANVAS_BLOCK_RE.sub("", text).strip()
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -2476,10 +2483,7 @@ async def websocket_endpoint(ws: WebSocket):
             effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION
         else:
             effective_prompt = SYSTEM_PROMPT
-        in_canvas_block = False    # Track if we're inside a <canvas> block
-        canvas_token_buf = ""      # Buffer tokens while inside canvas block
-        in_thinking_block = False  # Track if we're inside a <thinking> block
-        thinking_token_buf = ""    # Buffer tokens while inside thinking block
+        stream_filter = StreamMarkupFilter(canvas_enabled=canvas_enabled)
 
         async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt, bg_manager=bg_manager):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
@@ -2489,34 +2493,9 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({"type": "working"})
 
             elif event_type == "token":
-                # Always suppress <thinking> blocks — never spoken or displayed
-                thinking_token_buf += data
-                if not in_thinking_block and '<thinking>' in thinking_token_buf:
-                    in_thinking_block = True
-                if in_thinking_block and '</thinking>' in thinking_token_buf:
-                    in_thinking_block = False
-                    thinking_token_buf = ""
-                    continue
-                if in_thinking_block:
-                    continue
-                thinking_token_buf = ""
-
-                if canvas_enabled:
-                    canvas_token_buf += data
-                    # Detect entering canvas block
-                    if not in_canvas_block and '<canvas' in canvas_token_buf:
-                        in_canvas_block = True
-                    # Detect leaving canvas block
-                    if in_canvas_block and '</canvas>' in canvas_token_buf:
-                        in_canvas_block = False
-                        canvas_token_buf = ""
-                        continue
-                    # Suppress tokens while inside canvas block
-                    if in_canvas_block:
-                        continue
-                    # Not in canvas block — flush and send
-                    canvas_token_buf = ""
-                await ws.send_json({"type": "token", "text": data})
+                visible = stream_filter.feed(data)
+                if visible:
+                    await ws.send_json({"type": "token", "text": visible})
 
             elif event_type == "sentence":
                 if first_sentence_time is None:
@@ -2527,9 +2506,9 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
 
                 # Skip TTS for any sentence with thinking or canvas markup
-                if '<thinking>' in data or '</thinking>' in data or in_thinking_block:
+                if '<thinking>' in data or '</thinking>' in data or stream_filter.in_thinking_block:
                     continue
-                if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
+                if canvas_enabled and ('<canvas' in data or '</canvas>' in data or stream_filter.in_canvas_block):
                     continue
 
                 if skip_tts:
@@ -2632,10 +2611,7 @@ async def websocket_endpoint(ws: WebSocket):
             effective_prompt = SYSTEM_PROMPT + CANVAS_INSTRUCTION
         else:
             effective_prompt = SYSTEM_PROMPT
-        in_canvas_block = False
-        canvas_token_buf = ""
-        in_thinking_block = False
-        thinking_token_buf = ""
+        stream_filter = StreamMarkupFilter(canvas_enabled=canvas_enabled)
 
         async for event_type, data in chat_stream(user_text, cancel_event, effective_prompt, bg_manager=bg_manager):
             if cancel_event.is_set() and event_type not in ("cancelled", "done"):
@@ -2645,39 +2621,18 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({"type": "working"})
 
             elif event_type == "token":
-                # Always suppress <thinking> blocks — never spoken or displayed
-                thinking_token_buf += data
-                if not in_thinking_block and '<thinking>' in thinking_token_buf:
-                    in_thinking_block = True
-                if in_thinking_block and '</thinking>' in thinking_token_buf:
-                    in_thinking_block = False
-                    thinking_token_buf = ""
-                    continue
-                if in_thinking_block:
-                    continue
-                thinking_token_buf = ""
-
-                if canvas_enabled:
-                    canvas_token_buf += data
-                    if not in_canvas_block and '<canvas' in canvas_token_buf:
-                        in_canvas_block = True
-                    if in_canvas_block and '</canvas>' in canvas_token_buf:
-                        in_canvas_block = False
-                        canvas_token_buf = ""
-                        continue
-                    if in_canvas_block:
-                        continue
-                    canvas_token_buf = ""
-                await ws.send_json({"type": "token", "text": data})
+                visible = stream_filter.feed(data)
+                if visible:
+                    await ws.send_json({"type": "token", "text": visible})
 
             elif event_type == "sentence":
                 if first_sentence_time is None:
                     first_sentence_time = time.time() - llm_start
                 if cancel_event.is_set():
                     continue
-                if '<thinking>' in data or '</thinking>' in data or in_thinking_block:
+                if '<thinking>' in data or '</thinking>' in data or stream_filter.in_thinking_block:
                     continue
-                if canvas_enabled and ('<canvas' in data or '</canvas>' in data or in_canvas_block):
+                if canvas_enabled and ('<canvas' in data or '</canvas>' in data or stream_filter.in_canvas_block):
                     continue
                 if skip_tts:
                     sentence_count += 1
