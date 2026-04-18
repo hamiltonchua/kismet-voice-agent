@@ -195,6 +195,148 @@ HARMONY_TOOL_DEFS = (
     "} // namespace functions"
 )
 
+
+NON_HARMONY_TOOL_DEFS = (
+    "\n\n## Tool Calling\n"
+    "If you need to call a tool, output exactly one XML block and no other text:\n"
+    "<tool_call name=\"functions.<tool_name>\">{...json args...}</tool_call>\n\n"
+    "Available tools:\n"
+    "- functions.read_file args: {\"path\": \"/absolute/path\"}\n"
+    "- functions.list_directory args: {\"path\": \"/absolute/path\"}\n"
+    "- functions.delegate args: {\"task\": \"full task with context\"}\n"
+    "- functions.search_memory args: {\"query\": \"natural language query\"}\n"
+    "- functions.save_memory args: {\"title\": \"short title\", \"content\": \"full memory\", \"keywords\": \"optional,comma,separated\"}\n\n"
+    "Rules:\n"
+    "- Use functions.delegate only for tasks needing external research or long-running analysis.\n"
+    "- Use valid JSON for tool arguments.\n"
+    "- Do not wrap XML in markdown code fences.\n"
+    "- If not calling a tool, respond normally in plain spoken English."
+)
+
+NON_HARMONY_TOOL_HINT = (
+    "\n\nTool use: when tools are available from the API, call them directly rather than "
+    "printing pseudo-tool syntax in normal text."
+)
+
+
+OPENAI_TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the contents of a local file by absolute path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute file path"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": "List files and directories for an absolute path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute directory path"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate",
+            "description": "Delegate external research or long-running analysis.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "Complete task with context"},
+                },
+                "required": ["task"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": "Search long-term memory for relevant context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": "Save important information to long-term memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short memory title"},
+                    "content": {"type": "string", "description": "Full memory content"},
+                    "keywords": {"type": "string", "description": "Optional comma-separated keywords"},
+                },
+                "required": ["title", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def _accumulate_openai_tool_calls(acc: list[dict], delta_tool_calls: list[dict]) -> None:
+    """Accumulate streamed OpenAI-compatible tool call deltas by index."""
+    for tc in delta_tool_calls:
+        idx = tc.get("index", 0)
+        if not isinstance(idx, int) or idx < 0:
+            idx = 0
+        while len(acc) <= idx:
+            acc.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+
+        target = acc[idx]
+        tc_id = tc.get("id")
+        if isinstance(tc_id, str) and tc_id:
+            target["id"] = f"{target.get('id', '')}{tc_id}"
+
+        fn = tc.get("function", {})
+        if isinstance(fn, dict):
+            fn_name = fn.get("name")
+            if isinstance(fn_name, str) and fn_name:
+                target["function"]["name"] = f"{target['function'].get('name', '')}{fn_name}"
+
+            fn_args = fn.get("arguments")
+            if isinstance(fn_args, str) and fn_args:
+                target["function"]["arguments"] = f"{target['function'].get('arguments', '')}{fn_args}"
+
+
+def _parse_tool_args_string(raw_args: str) -> dict:
+    """Parse tool arguments JSON string into dict with best-effort fallback."""
+    if not raw_args:
+        return {}
+    try:
+        parsed = json.loads(raw_args)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"task": str(parsed)}
+    except json.JSONDecodeError:
+        return {"task": raw_args}
+
 # ---------------------------------------------------------------------------
 # Global singletons
 # ---------------------------------------------------------------------------
@@ -343,9 +485,12 @@ def _build_system_prompt(base_prompt: str, memory_context: str) -> str:
             "If it seems unrelated, ignore it."
         )
     parts.append(VOICE_OUTPUT_RULES)
-    # Add tool definitions for Harmony models with delegation enabled
-    if _is_harmony_model() and DELEGATE_ENABLED:
-        parts.append(HARMONY_TOOL_DEFS)
+    # Add tool definitions when delegation is enabled.
+    if DELEGATE_ENABLED:
+        if _is_harmony_model():
+            parts.append(HARMONY_TOOL_DEFS)
+        else:
+            parts.append(NON_HARMONY_TOOL_HINT)
     return "\n\n".join(parts)
 
 
@@ -763,6 +908,8 @@ async def push_canvas(blocks: list[dict], loop):
 # This filter extracts only 'final' channel content for the voice pipeline.
 # Transparent passthrough for non-Harmony models (auto-detected on first token).
 _HARMONY_CTRL_RE = re.compile(r'<\|(?:start|end|return|call|channel|constrain|message)\|>')
+_XML_TOOL_CALL_RE = re.compile(r'<tool_call\s+name=["\']([^"\']+)["\']\s*>(.*?)</tool_call>', re.DOTALL)
+_TOOL_REQUEST_RE = re.compile(r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]', re.DOTALL)
 
 
 class HarmonyFilter:
@@ -780,7 +927,7 @@ class HarmonyFilter:
     def feed(self, token: str) -> str:
         """Feed a streaming token. Returns text to emit (empty if suppressed)."""
         if self._passthrough:
-            return token
+            return self._process_passthrough_token(token)
 
         self._buf += token
 
@@ -790,11 +937,45 @@ class HarmonyFilter:
 
         # Fast path: first non-whitespace isn't <| → not Harmony, pass through
         stripped = self._buf.lstrip()
+        if stripped.startswith("[TOOL_REQUEST]"):
+            end_tag = "[END_TOOL_REQUEST]"
+            end_idx = self._buf.find(end_tag)
+            if end_idx == -1:
+                return ""
+
+            consumed = self._buf[:end_idx + len(end_tag)]
+            parsed = self._parse_tool_request_block(consumed)
+            if parsed is not None:
+                recipient, constrain, content = parsed
+                self._current_recipient = recipient
+                self._current_constrain = constrain
+                self._tool_calls.append((recipient, constrain, content))
+                self._buf = self._buf[end_idx + len(end_tag):]
+                return self._process_passthrough_token("")
+
+        if stripped.startswith("<tool_call"):
+            end_tag = "</tool_call>"
+            end_idx = self._buf.find(end_tag)
+            if end_idx == -1:
+                return ""
+
+            consumed = self._buf[:end_idx + len(end_tag)]
+            parsed = self._parse_xml_tool_call(consumed)
+            if parsed is not None:
+                recipient, constrain, content = parsed
+                self._current_recipient = recipient
+                self._current_constrain = constrain
+                self._tool_calls.append((recipient, constrain, content))
+                self._buf = self._buf[end_idx + len(end_tag):]
+                return self._process_passthrough_token("")
+
+        # Potential non-Harmony tool prefix still streaming — hold until clearer.
+        if stripped.startswith("<tool") or stripped.startswith("[TOOL"):
+            return ""
+
         if stripped and not stripped.startswith("<|"):
             self._passthrough = True
-            out = self._buf
-            self._buf = ""
-            return out
+            return self._process_passthrough_token("")
 
         # Check for Harmony control tokens
         if "<|channel|>" in self._buf or "<|start|>" in self._buf:
@@ -884,8 +1065,9 @@ class HarmonyFilter:
                     # Also check for legacy delegation pattern without explicit tool name
                     # e.g. <|channel|>commentary to=delegate
                     tool_match = re.search(
-                        r'to=(delegate|read_file|list_directory)\b.*?<\|message\|>(.*)',
-                        self._buf[:msg_end] + payload, re.DOTALL
+                        r'to=(delegate|read_file|list_directory|search_memory|save_memory)\b.*?<\|message\|>(.*)',
+                        self._buf[:msg_end] + payload,
+                        re.DOTALL,
                     )
                     if tool_match and tool_match.group(2):
                         matched_tool = tool_match.group(1)
@@ -914,7 +1096,7 @@ class HarmonyFilter:
         constrain_match = re.search(r'<\|constrain\|>([^<\s]+)', header)
         constrain = (constrain_match.group(1).strip() if constrain_match else "text")
 
-        _KNOWN_TOOLS = {"delegate", "read_file", "list_directory"}
+        _KNOWN_TOOLS = {"delegate", "read_file", "list_directory", "search_memory", "save_memory"}
 
         # Recipient may appear in role position after <|start|>.
         if not recipient:
@@ -948,8 +1130,145 @@ class HarmonyFilter:
 
         return recipient, constrain or "text", raw_content
 
+    def _parse_xml_tool_call(self, text: str) -> tuple[str, str, str] | None:
+        """Best-effort parse of non-Harmony XML tool calls."""
+        match = re.search(
+            r'<tool_call\s+name=["\']([^"\']+)["\']\s*>(.*?)</tool_call>',
+            text,
+            re.DOTALL,
+        )
+        if not match:
+            return None
+
+        recipient = match.group(1).strip()
+        content = (match.group(2) or "").strip()
+        if not recipient:
+            return None
+        if not recipient.startswith("functions."):
+            recipient = f"functions.{recipient}"
+
+        constrain = "json" if content.startswith("{") or content.startswith("[") else "text"
+        return recipient, constrain, content
+
+    def _parse_tool_request_block(self, text: str) -> tuple[str, str, str] | None:
+        """Parse LM Studio default [TOOL_REQUEST]... block."""
+        match = _TOOL_REQUEST_RE.search(text)
+        if not match:
+            return None
+
+        payload = (match.group(1) or "").strip()
+        if not payload:
+            return None
+
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+        name = parsed.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+
+        args = parsed.get("arguments", {})
+        if isinstance(args, dict):
+            content = json.dumps(args)
+            constrain = "json"
+        else:
+            content = str(args)
+            constrain = "text"
+
+        recipient = name.strip()
+        if not recipient.startswith("functions."):
+            recipient = f"functions.{recipient}"
+        return recipient, constrain, content
+
+    def _extract_non_harmony_tool_calls(self) -> None:
+        """Extract tool-call blocks from passthrough text and suppress them."""
+        while True:
+            xml_match = _XML_TOOL_CALL_RE.search(self._buf)
+            req_match = _TOOL_REQUEST_RE.search(self._buf)
+
+            selected = None
+            kind = ""
+            if xml_match and req_match:
+                if xml_match.start() <= req_match.start():
+                    selected = xml_match
+                    kind = "xml"
+                else:
+                    selected = req_match
+                    kind = "req"
+            elif xml_match:
+                selected = xml_match
+                kind = "xml"
+            elif req_match:
+                selected = req_match
+                kind = "req"
+            else:
+                break
+
+            block = selected.group(0)
+            parsed = self._parse_xml_tool_call(block) if kind == "xml" else self._parse_tool_request_block(block)
+            if parsed is not None:
+                recipient, constrain, content = parsed
+                self._current_recipient = recipient
+                self._current_constrain = constrain
+                self._tool_calls.append((recipient, constrain, content))
+
+            self._buf = self._buf[:selected.start()] + self._buf[selected.end():]
+
+    def _process_passthrough_token(self, token: str) -> str:
+        """Process non-Harmony text, suppressing tool blocks while streaming."""
+        if token:
+            self._buf += token
+
+        self._extract_non_harmony_tool_calls()
+
+        marker_positions = []
+        xml_idx = self._buf.find("<tool")
+        req_idx = self._buf.find("[TOOL")
+        if xml_idx != -1:
+            marker_positions.append(xml_idx)
+        if req_idx != -1:
+            marker_positions.append(req_idx)
+
+        if marker_positions:
+            cut = min(marker_positions)
+            if cut > 0:
+                out = self._buf[:cut]
+                self._buf = self._buf[cut:]
+                return out
+            return ""
+
+        # Keep a small tail to catch split markers across chunks.
+        keep_tail = 12
+        if len(self._buf) <= keep_tail:
+            return ""
+        out = self._buf[:-keep_tail]
+        self._buf = self._buf[-keep_tail:]
+        return out
+
     def flush(self) -> str:
         """Flush remaining buffer at end of stream."""
+        self._extract_non_harmony_tool_calls()
+
+        xml_parsed = self._parse_xml_tool_call(self._buf)
+        if xml_parsed is not None:
+            recipient, constrain, content = xml_parsed
+            self._current_recipient = recipient
+            self._current_constrain = constrain
+            self._tool_calls.append((recipient, constrain, content))
+            self._buf = re.sub(r'<tool_call\s+name=["\'][^"\']+["\']\s*>.*?</tool_call>', '', self._buf, count=1, flags=re.DOTALL)
+
+        req_parsed = self._parse_tool_request_block(self._buf)
+        if req_parsed is not None:
+            recipient, constrain, content = req_parsed
+            self._current_recipient = recipient
+            self._current_constrain = constrain
+            self._tool_calls.append((recipient, constrain, content))
+            self._buf = re.sub(r'\[TOOL_REQUEST\].*?\[END_TOOL_REQUEST\]', '', self._buf, count=1, flags=re.DOTALL)
+
         # Catch tool calls if stream ended without <|call|> stop token.
         msg_pos = self._buf.find("<|message|>")
         if msg_pos != -1:
@@ -964,8 +1283,9 @@ class HarmonyFilter:
                 return ""
 
         tool_match = re.search(
-            r'to=(delegate|read_file|list_directory)\b.*?<\|message\|>(.*)',
-            self._buf, re.DOTALL
+            r'to=(delegate|read_file|list_directory|search_memory|save_memory)\b.*?<\|message\|>(.*)',
+            self._buf,
+            re.DOTALL,
         )
         if tool_match and tool_match.group(2):
             matched_tool = tool_match.group(1)
@@ -977,6 +1297,9 @@ class HarmonyFilter:
             return ""
 
         if self._passthrough or self._emitting:
+            # Drop any incomplete tool markers at stream end.
+            self._buf = re.sub(r'\[TOOL_REQUEST\].*$', '', self._buf, flags=re.DOTALL)
+            self._buf = re.sub(r'<tool[^>]*>.*$', '', self._buf, flags=re.DOTALL)
             out = _HARMONY_CTRL_RE.sub("", self._buf)
             self._buf = ""
             return out.strip()
@@ -1737,18 +2060,24 @@ async def chat_stream(
         cancelled = False
         got_first_token = False
         working_emitted = False
+        openai_tool_calls: list[dict] = []
         harmony = HarmonyFilter()
 
         try:
+            request_body = {
+                "model": LLM_MODEL,
+                "messages": messages,
+                "stream": True,
+            }
+            if DELEGATE_ENABLED and not _is_harmony_model():
+                request_body["tools"] = OPENAI_TOOL_DEFS
+                request_body["tool_choice"] = "auto"
+
             async with _http_client.stream(
                 "POST",
                 LLM_URL,
                 headers=headers,
-                json={
-                    "model": LLM_MODEL,
-                    "messages": messages,
-                    "stream": True,
-                },
+                json=request_body,
                 timeout=httpx.Timeout(10.0, read=120.0),
             ) as response:
                 response.raise_for_status()
@@ -1775,8 +2104,13 @@ async def chat_stream(
 
                     try:
                         chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        choice = chunk.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
                         token = delta.get("content", "")
+                        delta_tool_calls = delta.get("tool_calls", [])
+
+                        if isinstance(delta_tool_calls, list) and delta_tool_calls:
+                            _accumulate_openai_tool_calls(openai_tool_calls, delta_tool_calls)
 
                         if token:
                             if not got_first_token:
@@ -1828,6 +2162,53 @@ async def chat_stream(
             yield ("cancelled", full_text)
             return
 
+        # OpenAI-compatible tool-call iteration (Gemma/LM Studio and other non-Harmony models)
+        if openai_tool_calls:
+            if iteration >= MAX_TOOL_ITERATIONS:
+                break
+
+            tool_call = openai_tool_calls[0]
+            function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+            tool_name = function.get("name", "") if isinstance(function, dict) else ""
+            raw_args = function.get("arguments", "") if isinstance(function, dict) else ""
+            tool_call_id = tool_call.get("id", "") if isinstance(tool_call, dict) else ""
+
+            if not tool_name:
+                print("[Tool] OpenAI tool call missing function name; skipping")
+                break
+
+            tool_args = _parse_tool_args_string(raw_args if isinstance(raw_args, str) else "")
+            print(f"[Tool] OpenAI tool call detected (iteration {iteration + 1}): {tool_name}")
+            print(f"[Tool] Raw args chars={len(raw_args) if isinstance(raw_args, str) else 0}")
+
+            if not working_emitted:
+                yield ("working", "")
+
+            tool_result = await execute_tool(tool_name, tool_args, bg_manager=bg_manager)
+
+            assistant_tool_msg = {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": tool_call_id or f"call_{int(time.time() * 1000)}",
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": raw_args if isinstance(raw_args, str) else json.dumps(tool_args),
+                        },
+                    }
+                ],
+            }
+            messages.append(assistant_tool_msg)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": assistant_tool_msg["tool_calls"][0]["id"],
+                    "content": tool_result,
+                }
+            )
+            continue
+
         # Tool-call iteration: no final channel content, but model requested a tool
         if harmony.tool_calls and not full_text.strip():
             if iteration >= MAX_TOOL_ITERATIONS:
@@ -1838,18 +2219,7 @@ async def chat_stream(
             print(f"[Tool] Raw args constrain={constrain} chars={len(tool_args_raw or '')}")
 
             # Parse tool arguments
-            tool_args = {}
-            if constrain == "json":
-                try:
-                    parsed = json.loads(tool_args_raw) if tool_args_raw else {}
-                    if isinstance(parsed, dict):
-                        tool_args = parsed
-                    else:
-                        tool_args = {"task": str(parsed)}
-                except json.JSONDecodeError:
-                    tool_args = {"task": tool_args_raw}
-            else:
-                tool_args = {"task": tool_args_raw}
+            tool_args = _parse_tool_args_string(tool_args_raw) if constrain == "json" else {"task": tool_args_raw}
 
             if not working_emitted:
                 yield ("working", "")
