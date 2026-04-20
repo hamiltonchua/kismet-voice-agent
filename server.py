@@ -907,7 +907,11 @@ async def push_canvas(blocks: list[dict], loop):
 #   <|channel|>final     — user-facing text (keep)
 # This filter extracts only 'final' channel content for the voice pipeline.
 # Transparent passthrough for non-Harmony models (auto-detected on first token).
+# Matches proper Harmony tokens: <|channel|>, <|start|>, etc.
 _HARMONY_CTRL_RE = re.compile(r'<\|(?:start|end|return|call|channel|constrain|message)\|>')
+# Also catch malformed/incomplete Harmony-like tokens that non-Harmony models may emit
+# e.g., "<|channel", "<channel|>", partial tokens with missing delimiters
+_HARMONY_MALFORMED_RE = re.compile(r'<\|(?:start|end|return|call|channel|constrain|message)\b[^>]*|<(?:start|end|return|call|channel|constrain|message)\|>')
 _XML_TOOL_CALL_RE = re.compile(r'<tool_call\s+name=["\']([^"\']+)["\']\s*>(.*?)</tool_call>', re.DOTALL)
 _TOOL_REQUEST_RE = re.compile(r'\[TOOL_REQUEST\](.*?)\[END_TOOL_REQUEST\]', re.DOTALL)
 
@@ -1238,7 +1242,10 @@ class HarmonyFilter:
             if cut > 0:
                 out = self._buf[:cut]
                 self._buf = self._buf[cut:]
-                return _HARMONY_CTRL_RE.sub("", out)
+                # Strip both proper Harmony tokens and malformed variants
+                out = _HARMONY_CTRL_RE.sub("", out)
+                out = _HARMONY_MALFORMED_RE.sub("", out)
+                return out
             return ""
 
         # Keep a small tail to catch split markers across chunks.
@@ -1247,7 +1254,10 @@ class HarmonyFilter:
             return ""
         out = self._buf[:-keep_tail]
         self._buf = self._buf[-keep_tail:]
-        return _HARMONY_CTRL_RE.sub("", out)
+        # Strip both proper Harmony tokens and malformed variants
+        out = _HARMONY_CTRL_RE.sub("", out)
+        out = _HARMONY_MALFORMED_RE.sub("", out)
+        return out
 
     def flush(self) -> str:
         """Flush remaining buffer at end of stream."""
@@ -1300,7 +1310,9 @@ class HarmonyFilter:
             # Drop any incomplete tool markers at stream end.
             self._buf = re.sub(r'\[TOOL_REQUEST\].*$', '', self._buf, flags=re.DOTALL)
             self._buf = re.sub(r'<tool[^>]*>.*$', '', self._buf, flags=re.DOTALL)
+            # Strip both proper Harmony tokens and malformed variants
             out = _HARMONY_CTRL_RE.sub("", self._buf)
+            out = _HARMONY_MALFORMED_RE.sub("", out)
             self._buf = ""
             return out.strip()
         self._buf = ""
