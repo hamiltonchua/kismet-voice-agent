@@ -165,9 +165,11 @@ Create a `.env` file and fill in your values:
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_URL` | `http://127.0.0.1:1234/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
-| `LLM_API_KEY` | — | Optional bearer token for the LLM endpoint |
+| `LLM_API_KEY` | — | **Required for Hermes `/v1/responses`** — Bearer token (check `~/.hermes/.env` for `API_SERVER_KEY`) |
 | `LLM_MODEL` | `nvidia/nemotron-3-nano` | Model name sent to the endpoint |
 | `MAX_HISTORY_MESSAGES` | `20` | Sliding window size for local conversation history |
+| `USE_RESPONSES_ENDPOINT` | `false` | Use `/v1/responses` (Hermes dialectic) instead of `/v1/chat/completions`. Changes request/response format. |
+| `DISABLE_LOCAL_MEMORY` | `false` | Disable SQLite session memory. Must be used with `USE_RESPONSES_ENDPOINT=true` for server-managed memory. |
 
 ### Memory (Forgetful RAG)
 

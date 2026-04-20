@@ -187,6 +187,8 @@ Path alias: `@/*` maps to `src/*` (configured in tsconfig + vite). Use for deep 
 | `DELEGATE_CMD` | `opencode` | CLI command for delegate execution |
 | `DELEGATE_MODEL` | `opencode/mimo-v2-pro-free` | Model for delegate agent |
 | `DELEGATE_TIMEOUT` | `120` | Delegate timeout in seconds |
+| `USE_RESPONSES_ENDPOINT` | `false` | Use `/v1/responses` (Hermes dialectic) instead of `/v1/chat/completions` |
+| `DISABLE_LOCAL_MEMORY` | `false` | Disable SQLite session memory (server manages history) |
 | `PUSH_SECRET` | — | Bearer token for push/webhook endpoints |
 | `PUSH_URL` | `https://prodigy.skunk-shark.ts.net:8765/push` | Push notification URL |
 
