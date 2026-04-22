@@ -153,19 +153,6 @@ HARMONY_TOOL_DEFS = (
     "\n\n# Tools\n\n"
     "## functions\n\n"
     "namespace functions {\n\n"
-    "// Read the contents of a file on the local filesystem.\n"
-    "// Use this for checking configs, logs, code, or any text file.\n"
-    "// Returns the file contents (truncated to 8000 chars if very large).\n"
-    "type read_file = (_: {\n"
-    "// Absolute path to the file to read\n"
-    "path: string,\n"
-    "}) => any;\n\n"
-    "// List files and directories at a given path.\n"
-    "// Returns names with a trailing / for directories.\n"
-    "type list_directory = (_: {\n"
-    "// Absolute path to the directory to list\n"
-    "path: string,\n"
-    "}) => any;\n\n"
     "// Delegates a task to an external AI assistant for research, up-to-date information,\n"
     "// or complex analysis beyond your local knowledge.\n"
     "// Use delegate only when the task requires web access, multi-step reasoning,\n"
@@ -201,8 +188,6 @@ NON_HARMONY_TOOL_DEFS = (
     "If you need to call a tool, output exactly one XML block and no other text:\n"
     "<tool_call name=\"functions.<tool_name>\">{...json args...}</tool_call>\n\n"
     "Available tools:\n"
-    "- functions.read_file args: {\"path\": \"/absolute/path\"}\n"
-    "- functions.list_directory args: {\"path\": \"/absolute/path\"}\n"
     "- functions.delegate args: {\"task\": \"full task with context\"}\n"
     "- functions.search_memory args: {\"query\": \"natural language query\"}\n"
     "- functions.save_memory args: {\"title\": \"short title\", \"content\": \"full memory\", \"keywords\": \"optional,comma,separated\"}\n\n"
@@ -220,36 +205,6 @@ NON_HARMONY_TOOL_HINT = (
 
 
 OPENAI_TOOL_DEFS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the contents of a local file by absolute path.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute file path"},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_directory",
-            "description": "List files and directories for an absolute path.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute directory path"},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
