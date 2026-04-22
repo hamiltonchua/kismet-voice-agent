@@ -860,6 +860,7 @@ export default function App() {
             messages={messages}
             meetingEntries={meetingEntries}
             meetingMode={meetingMode}
+            isProcessing={_isProcessing}
           />
           <ChatInput onSend={sendTextMessage} disabled={_isProcessing} />
         </div>
@@ -875,6 +876,7 @@ export default function App() {
           messages={messages}
           meetingEntries={meetingEntries}
           meetingMode={meetingMode}
+          isProcessing={_isProcessing}
         />
         <ChatInput onSend={sendTextMessage} disabled={_isProcessing} />
         {/* Mobile bottom dock */}
