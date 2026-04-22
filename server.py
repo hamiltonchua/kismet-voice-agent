@@ -449,6 +449,7 @@ def _build_system_prompt(base_prompt: str, memory_context: str) -> str:
             "If it seems unrelated, ignore it."
         )
     parts.append(VOICE_OUTPUT_RULES)
+    parts.append(VOICE_LATENCY_RULES)
     # Add tool definitions when delegation is enabled.
     if DELEGATE_ENABLED:
         if _is_harmony_model():
@@ -2060,6 +2061,7 @@ async def chat_stream(
                     if not got_first_token and not working_emitted and time.time() - request_start > 2.0:
                         working_emitted = True
                         print("[LLM] Tools likely running (>2s before first token)")
+                        yield ("status", "Thinking...")
                         yield ("working", "")
 
                     if not line.startswith("data: "):
@@ -2829,6 +2831,9 @@ async def websocket_endpoint(ws: WebSocket):
             if event_type == "working":
                 await ws.send_json({"type": "working"})
 
+            elif event_type == "status":
+                await ws.send_json({"type": "status", "text": data})
+
             elif event_type == "token":
                 visible = stream_filter.feed(data)
                 if visible:
@@ -2956,6 +2961,9 @@ async def websocket_endpoint(ws: WebSocket):
 
             if event_type == "working":
                 await ws.send_json({"type": "working"})
+
+            elif event_type == "status":
+                await ws.send_json({"type": "status", "text": data})
 
             elif event_type == "token":
                 visible = stream_filter.feed(data)
