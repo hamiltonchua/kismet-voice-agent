@@ -36,7 +36,7 @@ pip install -r requirements-linux.txt  # Linux CUDA
 pip install -r requirements.txt        # Generic/CUDA fallback
 
 python server.py                       # Start server on https://0.0.0.0:8765
-./start-kokoro.sh                      # Quick start macOS (Kokoro TTS)
+./start.sh                             # Quick start macOS (Orpheus TTS, Kokoro fallback)
 ./start-chatterbox.sh                  # Quick start Linux (Chatterbox TTS)
 ```
 

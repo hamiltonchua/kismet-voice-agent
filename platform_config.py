@@ -39,8 +39,8 @@ _default_tts_map = {"mlx": "mlx-audio", "cuda": "chatterbox-cuda", "cpu": "kokor
 TTS_BACKEND = os.getenv("TTS_BACKEND", _default_tts_map.get(PLATFORM, "kokoro-onnx"))
 
 # MLX TTS model (only used when TTS_BACKEND == "mlx-audio")
-MLX_TTS_MODEL = os.getenv("MLX_TTS_MODEL", "mlx-community/chatterbox-fp16")
-# Fallback MLX TTS model (kokoro, lighter weight)
+MLX_TTS_MODEL = os.getenv("MLX_TTS_MODEL", "mlx-community/orpheus-3b-0.1-ft-4bit")
+# Fallback MLX TTS model (Kokoro, lighter weight / fastest)
 MLX_TTS_MODEL_FALLBACK = os.getenv("MLX_TTS_MODEL_FALLBACK", "mlx-community/Kokoro-82M-bf16")
 
 

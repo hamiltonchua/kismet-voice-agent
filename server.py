@@ -51,6 +51,8 @@ WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE", "float16")
 TTS_ENGINE = os.getenv("TTS_ENGINE", "chatterbox")  # "chatterbox" or "kokoro" (legacy, used by CUDA/ONNX backends)
 KOKORO_VOICE = os.getenv("KOKORO_VOICE", "af_sky")
 CHATTERBOX_REF = os.getenv("CHATTERBOX_REF", None)  # Optional reference audio for voice cloning
+SOPRANO_REF = os.getenv("SOPRANO_REF", None)  # Optional reference audio for Soprano voice cloning
+ORPHEUS_VOICE = os.getenv("ORPHEUS_VOICE", "tara")  # Voice for Orpheus TTS (tara, leah, jess, mia, zoe, leo, dan, zac)
 MLX_TTS_VOICE = os.getenv("MLX_TTS_VOICE", "af_sky")  # Voice for MLX Kokoro
 STT_SAMPLE_RATE = 16000
 
@@ -484,8 +486,12 @@ def get_tts():
                 from mlx_audio.tts.utils import load_model
                 print(f"[TTS] Loading MLX model: {MLX_TTS_MODEL}...")
                 tts_model = load_model(MLX_TTS_MODEL)
-                # MLX Chatterbox uses 24000Hz, Kokoro uses 24000Hz
-                tts_sample_rate = 24000
+                # Sample rates vary by model; synthesize() reads result.sample_rate
+                # Defaults: Chatterbox/Kokoro 24000Hz, Soprano 32000Hz
+                if "soprano" in MLX_TTS_MODEL.lower():
+                    tts_sample_rate = 32000
+                else:
+                    tts_sample_rate = 24000
                 print(f"[TTS] MLX TTS ready. Model: {MLX_TTS_MODEL}")
             elif TTS_BACKEND == "chatterbox-cuda" or TTS_ENGINE == "chatterbox":
                 from chatterbox.tts_turbo import ChatterboxTurboTTS
@@ -2242,15 +2248,23 @@ def synthesize(text: str) -> tuple[bytes, int]:
 
     if TTS_BACKEND == "mlx-audio":
         import mlx.core as mx
-        # MLX Audio — works for both Chatterbox and Kokoro MLX models
-        is_chatterbox = "chatterbox" in MLX_TTS_MODEL.lower()
+        # MLX Audio — model-family aware kwargs
+        model_name = MLX_TTS_MODEL.lower()
+        is_chatterbox = "chatterbox" in model_name
+        is_soprano = "soprano" in model_name
+        is_kokoro = "kokoro" in model_name
+        is_orpheus = "orpheus" in model_name
         generate_kwargs = {"text": text}
-        if not is_chatterbox:
+        if is_kokoro:
             generate_kwargs["voice"] = MLX_TTS_VOICE
             generate_kwargs["speed"] = 1.0
             generate_kwargs["lang_code"] = "a"  # American English
+        if is_orpheus:
+            generate_kwargs["voice"] = ORPHEUS_VOICE
         if is_chatterbox and CHATTERBOX_REF:
             generate_kwargs["ref_audio"] = CHATTERBOX_REF
+        if is_soprano and SOPRANO_REF:
+            generate_kwargs["ref_audio"] = SOPRANO_REF
 
         samples = None
         for result in model.generate(**generate_kwargs):

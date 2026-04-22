@@ -1,7 +1,7 @@
 # macOS (Apple Silicon / MLX) dependencies
 -r requirements-common.txt
 mlx>=0.31.1
-mlx-audio==0.4.1
+mlx-audio==0.4.2
 misaki[en]==0.9.4
 num2words==0.5.14
 

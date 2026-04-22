@@ -13,7 +13,7 @@ Browser (mic) → WebSocket → Server
                               ├─ STT: MLX Parakeet (macOS) / faster-whisper (CUDA)
                               ├─ Smart Turn: turn-taking prediction (avoid mid-thought cutoffs)
                               ├─ LLM: OpenClaw /v1/chat/completions → your agent
-                              ├─ TTS: MLX Kokoro/Chatterbox (macOS) / Chatterbox (CUDA) / Kokoro ONNX (CPU)
+                              ├─ TTS: MLX Soprano/Kokoro/Chatterbox (macOS) / Chatterbox (CUDA) / Kokoro ONNX (CPU)
                               └─ Canvas: /canvas WebSocket → visual display panel
                             ← audio response + canvas content
 ```
@@ -28,7 +28,7 @@ The server auto-detects your hardware and selects the right backends:
 
 | Platform | STT | TTS | Notes |
 |---|---|---|---|
-| **macOS Apple Silicon** | MLX Parakeet TDT 0.6B v3 | MLX Kokoro / Chatterbox | Metal acceleration, no CUDA needed |
+| **macOS Apple Silicon** | MLX Parakeet TDT 0.6B v3 | MLX Orpheus / Soprano / Kokoro / Chatterbox | Metal acceleration, no CUDA needed |
 | **Linux + NVIDIA GPU** | faster-whisper (large-v3) | Chatterbox Turbo | CUDA, 6GB+ VRAM recommended |
 | **CPU-only** | faster-whisper (CPU mode) | Kokoro ONNX | Slower, but works anywhere |
 
@@ -135,10 +135,12 @@ Create a `.env` file and fill in your values:
 |---|---|---|
 | `TTS_BACKEND` | *(auto)* | `mlx-audio`, `chatterbox-cuda`, or `kokoro-onnx` |
 | `TTS_ENGINE` | `chatterbox` | Legacy: `chatterbox` or `kokoro` |
-| `MLX_TTS_MODEL` | `mlx-community/chatterbox-fp16` | MLX TTS model |
-| `MLX_TTS_MODEL_FALLBACK` | `mlx-community/Kokoro-82M-bf16` | Fallback MLX TTS model |
+| `MLX_TTS_MODEL` | `mlx-community/orpheus-3b-0.1-ft-4bit` | MLX TTS model |
+| `MLX_TTS_MODEL_FALLBACK` | `mlx-community/Kokoro-82M-bf16` | Fallback MLX TTS model (fastest) |
+| `ORPHEUS_VOICE` | `tara` | Voice for Orpheus (tara, leah, jess, mia, zoe, leo, dan, zac) |
 | `MLX_TTS_VOICE` | `af_sky` | Voice ID for MLX Kokoro |
-| `CHATTERBOX_REF` | — | Reference audio for voice cloning |
+| `CHATTERBOX_REF` | — | Reference audio for Chatterbox voice cloning |
+| `SOPRANO_REF` | — | Reference audio for Soprano voice cloning |
 | `KOKORO_VOICE` | `af_sky` | Kokoro ONNX voice ID |
 
 ### Wake Word & Speaker Verification
@@ -203,11 +205,13 @@ Create a `.env` file and fill in your values:
 
 ## Usage
 
-### Quick Start (macOS — Kokoro TTS)
+### Quick Start (macOS — Orpheus TTS)
 
 ```bash
-./start-kokoro.sh
+./start.sh
 ```
+
+> The default macOS TTS is now **Orpheus** (best quality, multiple voices). Female voices: `tara`, `leah`, `jess`, `mia`, `zoe`. Male voices: `leo`, `dan`, `zac`. To use a different model, set `MLX_TTS_MODEL` to Soprano or Kokoro.
 
 ### Quick Start (Linux — Chatterbox TTS)
 
