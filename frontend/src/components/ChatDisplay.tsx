@@ -6,6 +6,7 @@ interface ChatDisplayProps {
   messages: ChatMessage[]
   meetingEntries: MeetingEntry[]
   meetingMode: boolean
+  isProcessing?: boolean
 }
 
 type RichBlock =
@@ -158,8 +159,9 @@ function RichMessage({ text }: { text: string }) {
   )
 }
 
-export function ChatDisplay({ messages, meetingEntries, meetingMode }: ChatDisplayProps) {
+export function ChatDisplay({ messages, meetingEntries, meetingMode, isProcessing }: ChatDisplayProps) {
   const chatRef = useRef<HTMLDivElement>(null)
+  const hasStreaming = messages.some(m => m.role === 'assistant' && m.streaming)
 
   useEffect(() => {
     if (chatRef.current) {
@@ -193,6 +195,17 @@ export function ChatDisplay({ messages, meetingEntries, meetingMode }: ChatDispl
           {msg.meta && <div className="msg-meta">{msg.meta}</div>}
         </div>
       ))}
+
+      {isProcessing && !hasStreaming && (
+        <div className="msg-row assistant">
+          <span className="role-label">assistant</span>
+          <div className="msg-text">
+            <span className="status-pulse" style={{ color: 'var(--text2)', fontStyle: 'italic' }}>
+              Friday is thinking...
+            </span>
+          </div>
+        </div>
+      )}
 
       {meetingMode && meetingEntries.map(entry => (
         <div key={entry.id} className="meeting-row">

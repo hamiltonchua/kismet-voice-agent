@@ -111,6 +111,15 @@ VOICE_OUTPUT_RULES = (
     "- If listing multiple items, speak them naturally in sentence form."
 )
 
+VOICE_LATENCY_RULES = (
+    "You are in a real-time voice conversation. The user can only hear you, not see you.\n"
+    "If you need to use a tool, search memory, or do anything that takes more than a moment, "
+    "ALWAYS say a brief acknowledgment out loud FIRST — e.g. 'Let me check that', "
+    "'One moment', 'Looking that up now', 'Give me a second'.\n"
+    "Keep acknowledgments under 10 words. Do not use markdown, bullet points, or emojis.\n"
+    "Never stay completely silent for more than a few seconds — the user will think the connection broke."
+)
+
 
 MEETING_SYSTEM_PROMPT = os.getenv("MEETING_SYSTEM_PROMPT", (
     "You are Friday, a local voice assistant helping during a meeting. "
@@ -153,19 +162,6 @@ HARMONY_TOOL_DEFS = (
     "\n\n# Tools\n\n"
     "## functions\n\n"
     "namespace functions {\n\n"
-    "// Read the contents of a file on the local filesystem.\n"
-    "// Use this for checking configs, logs, code, or any text file.\n"
-    "// Returns the file contents (truncated to 8000 chars if very large).\n"
-    "type read_file = (_: {\n"
-    "// Absolute path to the file to read\n"
-    "path: string,\n"
-    "}) => any;\n\n"
-    "// List files and directories at a given path.\n"
-    "// Returns names with a trailing / for directories.\n"
-    "type list_directory = (_: {\n"
-    "// Absolute path to the directory to list\n"
-    "path: string,\n"
-    "}) => any;\n\n"
     "// Delegates a task to an external AI assistant for research, up-to-date information,\n"
     "// or complex analysis beyond your local knowledge.\n"
     "// Use delegate only when the task requires web access, multi-step reasoning,\n"
@@ -201,8 +197,6 @@ NON_HARMONY_TOOL_DEFS = (
     "If you need to call a tool, output exactly one XML block and no other text:\n"
     "<tool_call name=\"functions.<tool_name>\">{...json args...}</tool_call>\n\n"
     "Available tools:\n"
-    "- functions.read_file args: {\"path\": \"/absolute/path\"}\n"
-    "- functions.list_directory args: {\"path\": \"/absolute/path\"}\n"
     "- functions.delegate args: {\"task\": \"full task with context\"}\n"
     "- functions.search_memory args: {\"query\": \"natural language query\"}\n"
     "- functions.save_memory args: {\"title\": \"short title\", \"content\": \"full memory\", \"keywords\": \"optional,comma,separated\"}\n\n"
@@ -220,36 +214,6 @@ NON_HARMONY_TOOL_HINT = (
 
 
 OPENAI_TOOL_DEFS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the contents of a local file by absolute path.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute file path"},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_directory",
-            "description": "List files and directories for an absolute path.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute directory path"},
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
@@ -485,6 +449,7 @@ def _build_system_prompt(base_prompt: str, memory_context: str) -> str:
             "If it seems unrelated, ignore it."
         )
     parts.append(VOICE_OUTPUT_RULES)
+    parts.append(VOICE_LATENCY_RULES)
     # Add tool definitions when delegation is enabled.
     if DELEGATE_ENABLED:
         if _is_harmony_model():
@@ -1100,7 +1065,7 @@ class HarmonyFilter:
         constrain_match = re.search(r'<\|constrain\|>([^<\s]+)', header)
         constrain = (constrain_match.group(1).strip() if constrain_match else "text")
 
-        _KNOWN_TOOLS = {"delegate", "read_file", "list_directory", "search_memory", "save_memory"}
+        _KNOWN_TOOLS = {"delegate", "search_memory", "save_memory"}
 
         # Recipient may appear in role position after <|start|>.
         if not recipient:
@@ -1972,14 +1937,6 @@ async def execute_tool(
     bg_manager: BackgroundTaskManager | None = None,
 ) -> str:
     """Execute a Harmony tool call and return the result text."""
-    if tool_name in ("functions.read_file", "read_file"):
-        print(f"[Tool] read_file: {arguments.get('path', '?')}")
-        return _execute_read_file(arguments)
-
-    if tool_name in ("functions.list_directory", "list_directory"):
-        print(f"[Tool] list_directory: {arguments.get('path', '?')}")
-        return _execute_list_directory(arguments)
-
     if tool_name in ("functions.delegate", "delegate"):
         task = _coerce_delegate_task(arguments)
         preview = task.replace("\n", "\\n")
@@ -2011,7 +1968,7 @@ async def execute_tool(
         return await _execute_save_memory(arguments)
 
     print(f"[Tool] Unknown tool: {tool_name}")
-    return f"Error: Unknown tool '{tool_name}'. Available tools: read_file, list_directory, delegate, search_memory, save_memory"
+    return f"Error: Unknown tool '{tool_name}'. Available tools: delegate, search_memory, save_memory"
 
 
 
@@ -2104,6 +2061,7 @@ async def chat_stream(
                     if not got_first_token and not working_emitted and time.time() - request_start > 2.0:
                         working_emitted = True
                         print("[LLM] Tools likely running (>2s before first token)")
+                        yield ("status", "Thinking...")
                         yield ("working", "")
 
                     if not line.startswith("data: "):
@@ -2873,6 +2831,9 @@ async def websocket_endpoint(ws: WebSocket):
             if event_type == "working":
                 await ws.send_json({"type": "working"})
 
+            elif event_type == "status":
+                await ws.send_json({"type": "status", "text": data})
+
             elif event_type == "token":
                 visible = stream_filter.feed(data)
                 if visible:
@@ -3000,6 +2961,9 @@ async def websocket_endpoint(ws: WebSocket):
 
             if event_type == "working":
                 await ws.send_json({"type": "working"})
+
+            elif event_type == "status":
+                await ws.send_json({"type": "status", "text": data})
 
             elif event_type == "token":
                 visible = stream_filter.feed(data)
